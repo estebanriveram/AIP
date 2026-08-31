@@ -4194,6 +4194,18 @@ class ValueEngine:
             # nominal con la versión anterior.)
             declared = project.declared_execution_year or project.execution_year
             capex = sum(project.costs.capex_by_year.values())
+            # NOTA DE AUDITORÍA (hallada en revisión de calidad): las claves
+            # de capex_pv_por_tramo son los años calendario TAL COMO SE
+            # DECLARARON — no el año en que el tramo aterriza en el
+            # escenario que se está evaluando. _evaluate_inner() no conoce
+            # el año base del plan (solo deferral_years, un conteo de años,
+            # no un año calendario), así que no puede calcular un "año de
+            # aterrizaje" absoluto aquí dentro. Léase como "el valor
+            # presente del tramo que el analista declaró para el año X",
+            # no como "lo que este tramo cuesta en el año X de este
+            # escenario" — la rama legada (abajo) sí usa un año de
+            # escenario real (execution_year) como clave, así que las dos
+            # ramas no son directamente comparables por la clave.
             capex_pv_por_tramo = {
                 year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))
                 for year, monto in project.costs.capex_by_year.items()
