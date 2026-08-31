@@ -3962,6 +3962,15 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "Solo 2025/2026 tienen cupo simultáneo para los dos tramos "
             "reanclados; si esto falla, R1 sigue buscando 2028/2029 literales.",
         )
+        # assertIsNotNone por sí solo no discrimina: bajo el bug viejo, un
+        # proyecto con capex=0 y perfil no-literal parece costar 0 en TODAS
+        # las vigencias (no solo en 2028/2029), así que siempre "cabe" en
+        # cualquier ventana con presupuesto. Lo que sí distingue el arreglo
+        # es que el monto total reportado sea el perfil completo, no 0.
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        )
+        self.assertAlmostEqual(total_consumido, 8_000_000_000, delta=1.0)
 
     def test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana(self):
         """Un perfil que declara SOLO el primer año de una ventana de

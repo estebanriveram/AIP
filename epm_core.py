@@ -7014,7 +7014,14 @@ class EnterpriseOptimizer:
                 # fuera exactamente el año declarado, reportaba 0 aunque el
                 # proyecto sí tuviera costo real ahí.
                 if cap_by_year:
-                    capex_matrix[i][t] = cap_by_year.get(declared, 0.0)
+                    # A diferencia de la rama uniforme (que reporta cap_total/cy,
+                    # un año de gasto), aquí se reporta el TOTAL del perfil —
+                    # reportar solo el tramo del año declarado subestimaba
+                    # proyectos multi-tramo de la misma forma parcial que el
+                    # defecto original, solo que menos severa. Asimetría
+                    # preexistente entre las dos ramas, documentada aquí, no
+                    # armonizada — fuera de alcance de esta corrección.
+                    capex_matrix[i][t] = sum(cap_by_year.values())
                 else:
                     cy = max(1, proj.construction_years)
                     capex_matrix[i][t] = cap_total / cy
