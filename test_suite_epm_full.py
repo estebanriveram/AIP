@@ -3853,7 +3853,7 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
         r_legado = self.engine.evaluate(p_legado)
 
         p_perfil = _make_project(
-            pid="P911", capex=5_000_000_000, exec_year=2026,
+            pid="P911", capex=0, exec_year=2026,
             capex_by_year={2026: 5_000_000_000},
         )
         r_perfil = self.engine.evaluate(p_perfil)
