@@ -4018,6 +4018,31 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "viendo el perfil reanclado como gratis (costo 0).",
         )
 
+    def test_enterprise_r12_totex_cuenta_todos_los_tramos(self):
+        """R12 debe sumar TODOS los tramos del perfil, no solo el primero —
+        con get(declared) en vez de sum(...), un proyecto de dos tramos
+        (4.000M + 4.000M) contaría solo 4.000M contra el techo TOTEX,
+        dejándolo colarse bajo un techo que en realidad debería superar."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P923", capex=0, exec_year=2025, construction_years=2,
+            capex_by_year={2025: 4_000_000_000, 2026: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=10_000_000_000,
+                           totex_budget_COP=5_000_000_000)  # cabe 1 tramo, no los 2
+            for y in (2025, 2026)
+        ]
+        result = opt.optimize([p], periods, base_year=2025)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P923"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con techo TOTEX de 5.000M y CAPEX real de 8.000M (dos "
+            "tramos), el proyecto no debía caber — si se seleccionó, R12 "
+            "solo está contando el primer tramo (4.000M), no el total.",
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME

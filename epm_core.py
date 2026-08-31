@@ -7476,7 +7476,12 @@ class EnterpriseOptimizer:
                     # no un ledger multi-año: se usa el tramo declarado para
                     # el año de arranque (offset 0).
                     if cap_by_year:
-                        capex_this = cap_by_year.get(declared, 0.0)
+                        # Mismo patrón que capex_matrix: se usa el total del
+                        # perfil, no solo el tramo declarado — R12 solo
+                        # carga TOTEX en la vigencia de inicio (s=t), así
+                        # que atribuye el costo completo del proyecto a ese
+                        # único candidato, igual que capex_matrix.
+                        capex_this = sum(cap_by_year.values())
                     else:
                         capex_this = proj.costs.capex_COP / cy
                     opex_npv = (getattr(proj.costs, "opex_incremental_COP_year", 0.0)
