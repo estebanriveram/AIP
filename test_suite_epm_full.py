@@ -3846,6 +3846,83 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
         p.execution_year = 2026  # simula lo que hace un bucle de escaneo MILP
         self.assertEqual(p.declared_execution_year, 2028)
 
+    def test_capex_by_year_un_tramo_igual_al_legado(self):
+        """Un solo tramo en declared_execution_year debe dar exactamente el
+        mismo VNT que el camino legado con ese mismo CAPEX como escalar."""
+        p_legado = _make_project(pid="P910", capex=5_000_000_000, exec_year=2026)
+        r_legado = self.engine.evaluate(p_legado)
+
+        p_perfil = _make_project(
+            pid="P911", capex=5_000_000_000, exec_year=2026,
+            capex_by_year={2026: 5_000_000_000},
+        )
+        r_perfil = self.engine.evaluate(p_perfil)
+
+        self.assertAlmostEqual(
+            r_perfil["net_value_COP"], r_legado["net_value_COP"], delta=1.0,
+            msg="Un perfil de un solo tramo en el año declarado debe "
+                "coincidir al peso con el camino legado (regresión).",
+        )
+
+    def test_capex_by_year_multitramo_sin_escaneo(self):
+        """Perfil de dos tramos, sin ningún escaneo (execution_year ==
+        declared_execution_year): cada tramo se descuenta por separado desde
+        declared_execution_year, verificado con un oráculo independiente."""
+        p = _make_project(
+            pid="P912", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        wacc = self.engine._get_wacc(p.business_unit)
+
+        capex_pv_esperado = (
+            3_000_000_000 / ((1 + wacc) ** 0) +
+            2_000_000_000 / ((1 + wacc) ** 1)
+        )
+        cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
+
+        self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_by_year_se_reancla_bajo_escaneo(self):
+        """Si execution_year se reasigna a un candidato distinto del
+        declarado (lo que hacen ambos optimizadores MILP al escanear), el
+        perfil se mueve junto — cada tramo aterriza 'delta' años antes o
+        después, no en su año calendario literal original."""
+        p = _make_project(
+            pid="P913", capex=0, exec_year=2028,  # declarado en 2028
+            capex_by_year={2028: 3_000_000_000, 2029: 2_000_000_000},
+        )
+        p.execution_year = 2026  # el MILP prueba arrancar 2 años antes
+        r = self.engine.evaluate(p)
+        wacc = self.engine._get_wacc(p.business_unit)
+
+        # delta = 2026 - 2028 = -2; los tramos reanclados caen en offset
+        # (2028-2028)+(-2)=-2 y (2029-2028)+(-2)=-1 años desde "hoy" — es
+        # decir, ambos tramos habrían ocurrido ANTES del año que se evalúa
+        # como referencia, así que se descuentan hacia adelante (exponente
+        # negativo → factor > 1).
+        capex_pv_esperado = (
+            3_000_000_000 / ((1 + wacc) ** -2) +
+            2_000_000_000 / ((1 + wacc) ** -1)
+        )
+        cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
+
+        self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_schedule_pv_reportado_por_tramo(self):
+        """capex_schedule_pv_COP debe exponer cada tramo por separado, no
+        solo el total — es lo que permite auditar dónde quedó cada peso."""
+        p = _make_project(
+            pid="P914", capex=0, exec_year=2026,
+            capex_by_year={2026: 1_000_000_000, 2028: 1_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        self.assertIn(2026, r["capex_schedule_pv_COP"])
+        self.assertIn(2028, r["capex_schedule_pv_COP"])
+        self.assertAlmostEqual(
+            sum(r["capex_schedule_pv_COP"].values()), r["capex_pv_COP"], delta=1.0
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME

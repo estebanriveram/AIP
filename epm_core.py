@@ -4168,19 +4168,46 @@ class ValueEngine:
         cod = timing["cod_total_COP"]
 
         # 4. Costos (CAPEX + OPEX incremental como medidas negativas)
-        # CAPEX se infla por años de postergación (inflación obra civil)
         capex_inflation_rate = self.config.get("capex_inflation_rate", 0.04)
-        capex_base = project.costs.capex_COP
-        capex = capex_base * ((1.0 + capex_inflation_rate) ** deferral_years) if deferral_years > 0 else capex_base
 
-        # CAPEX a valor presente. Se inflaba a pesos del año de ejecución y se
-        # restaba contra beneficios en pesos de hoy, sin descontarlo de vuelta:
-        # a 5 años de diferimiento el motor le cobraba al proyecto un 57% más
-        # de lo que ese desembolso vale hoy. `capex` (nominal) se conserva para
-        # los umbrales de proporcionalidad, que miden tamaño de obra, no valor.
-        capex_pv = capex
-        if deferral_years > 0:
-            capex_pv = capex / ((1.0 + self.wacc) ** deferral_years)
+        if project.costs.capex_by_year:
+            # Perfil explícito por año calendario, pesos nominales ya
+            # inflados por el analista — el motor solo descuenta, no infla.
+            #
+            # offset_k = año_k − declared_execution_year: la FORMA del
+            # perfil, fija desde que se declaró. delta = execution_year −
+            # declared_execution_year: cuánto se movió el arranque respecto
+            # a lo declarado (0 en la evaluación normal; distinto de 0
+            # cuando un escaneo del MILP está probando un año candidato).
+            # Cada tramo se descuenta a (offset_k + delta) años desde hoy.
+            #
+            # Deliberadamente NO se suma deferral_years aquí — mezclarlo
+            # con delta duplicaría el desplazamiento en los bucles de
+            # escaneo que ya reasignan execution_year Y pasan deferral_years
+            # calculado desde una referencia distinta (ver EnterpriseOptimizer).
+            # El camino legado (else, abajo) sigue usando deferral_years
+            # exactamente como siempre.
+            declared = project.declared_execution_year or project.execution_year
+            delta = project.execution_year - declared
+            capex = sum(project.costs.capex_by_year.values())
+            capex_pv_por_tramo = {
+                year: monto / ((1.0 + self.wacc) ** ((year - declared) + delta))
+                for year, monto in project.costs.capex_by_year.items()
+            }
+            capex_pv = sum(capex_pv_por_tramo.values())
+        else:
+            # Camino legado — sin cambios de comportamiento.
+            capex_base = project.costs.capex_COP
+            capex = capex_base * ((1.0 + capex_inflation_rate) ** deferral_years) if deferral_years > 0 else capex_base
+            # CAPEX a valor presente. Se inflaba a pesos del año de ejecución y se
+            # restaba contra beneficios en pesos de hoy, sin descontarlo de vuelta:
+            # a 5 años de diferimiento el motor le cobraba al proyecto un 57% más
+            # de lo que ese desembolso vale hoy. `capex` (nominal) se conserva para
+            # los umbrales de proporcionalidad, que miden tamaño de obra, no valor.
+            capex_pv = capex
+            if deferral_years > 0:
+                capex_pv = capex / ((1.0 + self.wacc) ** deferral_years)
+            capex_pv_por_tramo = {project.execution_year: capex_pv}
 
         # OPEX incremental: anualidad plana, sin rezago y sin crecimiento.
         # Dos decisiones abiertas pendientes de ASPD, medidas y documentadas en
@@ -4267,6 +4294,7 @@ class ValueEngine:
             "model_level": model_level,
             "capex_COP": capex,                 # nominal del año de ejecución
             "capex_pv_COP": capex_pv,           # el que entra a la ecuación
+            "capex_schedule_pv_COP": capex_pv_por_tramo,  # cada tramo, para auditoría
             "opex_incremental_npv_COP": opex_npv,
             "analysis_horizon_years": self.horizon,
             "horizon_asset_years": horizon_asset,
