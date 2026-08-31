@@ -5603,17 +5603,29 @@ class PortfolioOptimizer:
             # corrección: el VNT de un proyecto con CAPEX legado apenas
             # variaba entre años candidatos (~0,1-0,2% por año, no un
             # descuento económico real) — el escaneo de año óptimo de este
-            # optimizador era casi inerte. Mismo patrón que ya usa
-            # EnterpriseOptimizer (deferral = period.year - min(years)),
-            # reutilizando el base_year que optimize() ya recibe. También
-            # es lo que hace que capex_by_year se reancle aquí: bajo la
-            # fórmula corregida de la Task 2, esa rama usa deferral_years,
-            # no execution_year — sin este cambio, el perfil tampoco se
-            # movería con el candidato en este optimizador.
+            # optimizador era casi inerte.
+            #
+            # CORRECCIÓN (hallada en la revisión final de todo el trabajo):
+            # la primera versión de este cambio usaba el parámetro base_year
+            # que optimize() recibe, afirmando —incorrectamente— que así
+            # replicaba lo que ya hace EnterpriseOptimizer. No es cierto:
+            # EnterpriseOptimizer calcula deferral = period.year - min(years)
+            # (epm_core.py, bucle de precálculo de VNT), es decir, contra el
+            # año MÁS TEMPRANO DE LAS VIGENCIAS RECIBIDAS, no contra el
+            # parámetro base_year — ese parámetro ahí solo se usa para
+            # Continuous Planning (EVM/ETC), nunca para deferral_years. Si un
+            # llamador pasara budget_periods cuyo primer año no coincide con
+            # base_year (p. ej. re-planeación a mitad de año), los dos
+            # optimizadores habrían dado VNT distinto para el mismo proyecto
+            # — verificado empíricamente: ~18% de diferencia en un caso de
+            # prueba con esa combinación. Se corrige usando min(bp.year for
+            # bp in budget_periods), la misma referencia que ya usa
+            # EnterpriseOptimizer, en vez de base_year.
+            _plan_base_year = min(bp.year for bp in budget_periods)
             for t, bp in enumerate(budget_periods):
                 original_exec = proj.execution_year
                 proj.execution_year = bp.year
-                deferral = max(0, bp.year - base_year)
+                deferral = max(0, bp.year - _plan_base_year)
                 r = self.engine.evaluate(proj, deferral_years=deferral)
                 net_values[i, t] = r["net_value_COP"]
                 proj.execution_year = original_exec

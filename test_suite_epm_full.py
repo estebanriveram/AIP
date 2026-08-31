@@ -3951,6 +3951,50 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
         r = self.engine.evaluate(p)
         self.assertAlmostEqual(r["capex_COP"], 2_000_000_000, delta=1.0)
 
+    def test_ambos_optimizadores_coinciden_con_base_year_desalineado(self):
+        """PortfolioOptimizer y EnterpriseOptimizer deben dar el mismo VNT
+        para el mismo proyecto/vigencias, incluso cuando el parámetro
+        base_year NO coincide con el primer año de las vigencias.
+
+        Hallazgo de la revisión final de todo el trabajo: PortfolioOptimizer
+        usaba base_year para calcular deferral_years, mientras
+        EnterpriseOptimizer siempre usó min(years de las vigencias) — nunca
+        el parámetro base_year, que ahí solo sirve para Continuous
+        Planning. Los dos solo coincidían por casualidad en todos los
+        llamadores existentes, que siempre pasan base_year == min(vigencias).
+        Este caso lo rompe deliberadamente: solo hay cupo en 2032, y
+        base_year se declara en 2020 — muy lejos de 2030 (el primer año de
+        la ventana) y de 2032 (el año que realmente se selecciona)."""
+        periods_simple = (
+            [BudgetPeriod(year=y, budget_COP=0.0) for y in (2030, 2031)] +
+            [BudgetPeriod(year=2032, budget_COP=10_000_000_000)]
+        )
+        periods_ent = (
+            [ResourcePeriod(year=y, budget_COP=0.0) for y in (2030, 2031)] +
+            [ResourcePeriod(year=2032, budget_COP=10_000_000_000)]
+        )
+        p_simple = _make_project(pid="P940", capex=5_000_000_000, exec_year=2030, is_mandatory=True)
+        p_ent = _make_project(pid="P941", capex=5_000_000_000, exec_year=2030, is_mandatory=True)
+
+        r_simple = PortfolioOptimizer(config=self.cfg).optimize(
+            [p_simple], periods_simple, base_year=2020)
+        r_ent = EnterpriseOptimizer(config=self.cfg).optimize(
+            [p_ent], periods_ent, base_year=2020)
+
+        sel_simple = next(s for s in r_simple.selected if s["project_id"] == "P940")
+        sel_ent = next(s for s in r_ent.selected if s["project_id"] == "P941")
+
+        self.assertEqual(sel_simple["year"], 2032)
+        self.assertEqual(sel_ent["year"], 2032)
+        self.assertAlmostEqual(
+            sel_simple["net_value_COP"], sel_ent["net_value_COP"], delta=1.0,
+            msg="Los dos optimizadores deben acordar el mismo VNT para el "
+                "mismo escenario — si difieren, uno de los dos está usando "
+                "base_year (parámetro) y el otro min(vigencias) para "
+                "deferral_years, y no son la misma referencia salvo que "
+                "coincidan por casualidad.",
+        )
+
     def test_enterprise_r1_reancla_perfil_al_candidato(self):
         """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
         seleccionarse arrancando en otro año — su gasto real debe caer
