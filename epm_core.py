@@ -7073,21 +7073,34 @@ class EnterpriseOptimizer:
                            for i in range(n) for t in range(T)), "VNT_total"
 
         # ── R1: Presupuesto por vigencia ──────────────────────────────────────
+        # Antes: si cap_by_year no cubría TODOS los años de la ventana [0,cy),
+        # los años sin declarar caían al reparto uniforme del total —
+        # cobrando dos veces. Y el año calendario declarado nunca se
+        # reanclaba al candidato s que el MILP está probando: un proyecto
+        # con capex_by_year solo podía "verse" gastando en los años
+        # calendario literales que el analista escribió.
         for t, period in enumerate(periods):
-            # CAPEX que consume proyecto i si inicia en s y estamos en t
             expr = []
             for i in range(n):
-                cy = max(1, projects[i].construction_years)
-                cap_by_year = getattr(projects[i].costs, 'capex_by_year', {}) or {}
+                proj = projects[i]
+                cy = max(1, proj.construction_years)
+                cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+                declared = proj.declared_execution_year or proj.execution_year
                 for s in range(T):
-                    t_rel = t - s
-                    if 0 <= t_rel < cy:
-                        if cap_by_year and years[t] in cap_by_year:
-                            coef = cap_by_year.get(years[t], 0)
-                        else:
-                            coef = projects[i].costs.capex_COP / cy
-                        if coef > 0:
-                            expr.append(coef * x[i][s])
+                    if cap_by_year:
+                        # Perfil explícito: se reancla completo al candidato s.
+                        # Un año de la ventana sin tramo declarado consume 0 —
+                        # nunca cae al reparto uniforme del total.
+                        delta = years[s] - declared
+                        coef = sum(
+                            monto for year_k, monto in cap_by_year.items()
+                            if year_k + delta == years[t]
+                        )
+                    else:
+                        t_rel = t - s
+                        coef = proj.costs.capex_COP / cy if 0 <= t_rel < cy else 0.0
+                    if coef > 0:
+                        expr.append(coef * x[i][s])
             if expr:
                 prob += (pulp.lpSum(expr) <= period.budget_COP,
                          f"Presupuesto_{period.year}")

@@ -3937,6 +3937,54 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             sum(r["capex_schedule_pv_COP"].values()), r["capex_pv_COP"], delta=1.0
         )
 
+    def test_enterprise_r1_reancla_perfil_al_candidato(self):
+        """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
+        seleccionarse arrancando en 2026 — su gasto real debe caer en
+        2026/2027 (reanclado), no permanecer buscando 2028/2029."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P920", capex=0, exec_year=2028, construction_years=2,
+            capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=5_000_000_000)
+            for y in (2026, 2027, 2028, 2029, 2030)
+        ]
+        # Presupuesto solo alcanza en 2026/2027 — si el proyecto solo puede
+        # gastar en 2028/2029 (sin reanclar), el MILP no puede colocarlo aquí.
+        for per in periods:
+            if per.year in (2028, 2029):
+                per.budget_COP = 0.0
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P920"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "El proyecto debía poder ejecutarse en 2026-2027 con su gasto "
+            "reanclado; si esto falla, R1 sigue buscando 2028/2029 literales.",
+        )
+
+    def test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana(self):
+        """Un perfil que declara SOLO el primer año de una ventana de
+        construcción de 2 años no debe cobrar además el reparto uniforme
+        del total en el segundo año — eso contaría el CAPEX dos veces."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P921", capex=6_000_000_000, exec_year=2026, construction_years=2,
+            capex_by_year={2026: 6_000_000_000},  # 2027 deliberadamente sin declarar
+            is_mandatory=True,
+        )
+        periods = [ResourcePeriod(year=y, budget_COP=7_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        ) if hasattr(result, "budget_utilization") else None
+        # El total consumido en todo el plan no puede exceder el CAPEX
+        # declarado (6.000M) — si el año 2027 cobra ADEMÁS 3.000M por la
+        # rama uniforme, el total sube a 9.000M.
+        self.assertIsNotNone(total_consumido)
+        self.assertLessEqual(total_consumido, 6_000_000_000 + 1.0)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
