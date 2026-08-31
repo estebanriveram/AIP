@@ -545,7 +545,7 @@ a 221 pruebas (+57).
 
 ---
 
-### D-9 · Perfil de CAPEX por año — cierra C-1, siete defectos corregidos, dos abiertos
+### D-9 · Perfil de CAPEX por año — cierra C-1, ocho defectos corregidos, dos abiertos
 
 Origen distinto al de D-8: no se encontró verificando contra la documentación
 de Copperleaf, sino al diseñar cómo comparar alternativas de horizontes
@@ -629,26 +629,53 @@ campo escalar `capex_COP` en 0, así que el reporte impreso
 (`print_portfolio_report`) mostraba CAPEX y VEI en cero para un proyecto que
 el motor sí contabilizó y presupuestó bien internamente.
 
-> **Nota de método.** Cada uno de NC-6 a NC-10 se encontró **durante la
-> ejecución** de la tarea que corregía el anterior — no estaban en el diseño
-> original. El patrón se repitió cinco veces: la revisión de calidad
-> independiente (dos etapas, spec y calidad, subagente distinto en cada una)
-> encontraba una instancia adicional del mismo defecto en otro punto del
-> archivo, o una prueba que pasaba por una razón ajena al arreglo que decía
-> vigilar — la misma lección de NC-1 en D-8 (probar la etiqueta, no el
-> comportamiento), repetida en NC-7/NC-9/NC-10 con exactamente esa forma. En
-> dos de esos casos (NC-6→NC-7/NC-8, NC-9→NC-10) el usuario decidió
-> explícitamente ampliar el alcance de la tarea en curso en vez de diferirlo;
-> el registro de decisiones completo queda en el historial de commits de la
-> rama.
+#### NC-11 · Los dos optimizadores usaban referencias distintas para `deferral_years` — CERRADO
+
+Encontrado, a diferencia de NC-4 a NC-10, **no** por la revisión de una tarea
+individual sino por la revisión final de todo el trabajo junto — el tipo de
+defecto que solo aparece al mirar dos piezas ya cada una aprobada por
+separado. `EnterpriseOptimizer` siempre calculó `deferral_years = period.year
+− min(años de las vigencias recibidas)`. La corrección de NC-9 en
+`PortfolioOptimizer` usaba en cambio el parámetro `base_year` que
+`optimize()` recibe, con un comentario que afirmaba —incorrectamente— que así
+replicaba lo que ya hacía `EnterpriseOptimizer`. Las dos referencias solo
+coinciden cuando `base_year == min(vigencias)`, algo que todo llamador
+existente y toda prueba de la suite hacían por convención, no por ninguna
+validación que lo exigiera.
+
+| Mismo proyecto, vigencias con `min = 2030`, `base_year = 2020` (desalineado) | VNT |
+|---|---|
+| `EnterpriseOptimizer` (siempre correcto: usa `min(vigencias)`) | −4.279.401.528 |
+| `PortfolioOptimizer` (con el defecto: usaba `base_year`) | −2.612.614.829 |
+| **Diferencia** | **~39 %** |
+
+Se corrigió `PortfolioOptimizer` para usar `min(vigencias)`, la misma
+referencia real que ya usa `EnterpriseOptimizer` — no `base_year`. Vigilado
+por una prueba nueva que fuerza deliberadamente el desalineamiento y confirma
+que ambos optimizadores acuerdan.
+
+> **Nota de método.** Cada uno de NC-6 a NC-11 se encontró **durante la
+> ejecución** de la tarea que corregía el anterior, o —en el caso de NC-11—
+> durante la revisión final que mira todas las tareas juntas. El patrón se
+> repitió seis veces: la revisión de calidad independiente (dos etapas, spec
+> y calidad, subagente distinto en cada una, más una revisión final de todo
+> el trabajo) encontraba una instancia adicional del mismo defecto en otro
+> punto del archivo, o una prueba que pasaba por una razón ajena al arreglo
+> que decía vigilar, o —NC-11 específicamente— una afirmación de diseño que
+> nadie había verificado contra el código del optimizador que decía imitar —
+> la misma lección de NC-1 en D-8 (probar la etiqueta, no el comportamiento),
+> repetida en NC-7/NC-9/NC-10/NC-11 con exactamente esa forma. En varios de
+> esos casos el usuario decidió explícitamente ampliar el alcance de la tarea
+> en curso en vez de diferirlo; el registro de decisiones completo queda en
+> el historial de commits de la rama.
 
 **Vigilado por el grupo S31**, con campaña de mutación dedicada: 12
-mutaciones cubriendo NC-4 a NC-10, más una prueba adicional para el `capex_COP`
-nominal (hallazgo de la revisión de la propia campaña). Primera corrida:
-10/12 muertos, 2 sobrevivientes — ambos por la misma causa de siempre (una
-prueba medía un campo reportado por un camino de código distinto al que la
-mutación realmente rompía). Corregido: **12/12 mueren.** Suite: 232 → 252
-pruebas (+20).
+mutaciones cubriendo NC-4 a NC-10, más pruebas adicionales para el `capex_COP`
+nominal y para NC-11 (halladas en revisiones posteriores a la campaña
+formal). Primera corrida de la campaña: 10/12 muertos, 2 sobrevivientes —
+ambos por la misma causa de siempre (una prueba medía un campo reportado por
+un camino de código distinto al que la mutación realmente rompía). Corregido:
+**12/12 mueren.** Suite: 232 → 253 pruebas (+21).
 
 #### Hallazgo abierto · Incentivo a diferir al borde del horizonte
 
@@ -716,6 +743,7 @@ fuera de ese alcance por ser de menor severidad inmediata:
 | D-9 NC-8 R12 (TOTEX) sin reanclar | Suite, grupo S31 | **Cerrado** |
 | D-9 NC-9 `PortfolioOptimizer` sin pruebas, anclaje roto | Suite, grupo S31 (primera cobertura) | **Cerrado** |
 | D-9 NC-10 `selected.capex_COP`/`vei` con escalar sin usar | Suite, grupo S31 | **Cerrado** |
+| D-9 NC-11 `deferral_years` con referencia distinta entre optimizadores | Medido: ~39 % de diferencia de VNT | **Cerrado** |
 | D-9 Incentivo a diferir al borde del horizonte | Mismo espíritu que NC-2 (D-8) | **Abierto — decisión de diseño** |
 | D-9 Gasto Comprometido y reporte por vigencia, mismo patrón | `_capex_committed`, `print_portfolio_report` | **Abierto — menor severidad** |
 
