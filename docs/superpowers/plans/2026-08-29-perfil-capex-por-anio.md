@@ -402,35 +402,45 @@ legado de CAPEX escalar no cambia de comportamiento."
 - Modify: `epm_core.py:7016-7034` (restricción R1)
 - Test: `test_suite_epm_full.py` (clase `S31_PerfilCapexPorAnio`)
 
-- [ ] **Step 1: Escribir las pruebas que fallan**
+**Nota:** esta Task pasó por varias rondas de corrección durante su propia ejecución — el subagente implementador escaló tres veces en vez de forzar que una prueba pasara con evidencia débil, y cada escalamiento reveló una instancia adicional del mismo defecto en otro punto del archivo. Lo que sigue es el **estado final**, no la primera versión. El historial completo queda en los commits `1ebb968`, `76a272d`, `094dd8b` y sus mensajes.
+
+- [x] **Step 1: Escribir las pruebas (versión final, tras tres rondas de corrección)**
 
 ```python
     def test_enterprise_r1_reancla_perfil_al_candidato(self):
         """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
-        seleccionarse arrancando en 2026 — su gasto real debe caer en
-        2026/2027 (reanclado), no permanecer buscando 2028/2029."""
+        seleccionarse arrancando en otro año — su gasto real debe caer
+        reanclado. Solo 2025/2026 tienen cupo (interior de la ventana, lejos
+        de ambos bordes) para que ningún candidato trunque un tramo contra
+        el límite del horizonte — eso confundiría esta prueba con el
+        comportamiento intencional de 'tramo fuera de ventana no consume
+        cupo' (spec sección 5), que es un caso distinto y no se toca aquí."""
         opt = EnterpriseOptimizer(config=self.cfg)
         p = _make_project(
             pid="P920", capex=0, exec_year=2028, construction_years=2,
             capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
             is_mandatory=True,
         )
-        periods = [
-            ResourcePeriod(year=y, budget_COP=5_000_000_000)
-            for y in (2026, 2027, 2028, 2029, 2030)
-        ]
-        # Presupuesto solo alcanza en 2026/2027 — si el proyecto solo puede
-        # gastar en 2028/2029 (sin reanclar), el MILP no puede colocarlo aquí.
+        periods = [ResourcePeriod(year=y, budget_COP=0.0) for y in range(2020, 2036)]
         for per in periods:
-            if per.year in (2028, 2029):
-                per.budget_COP = 0.0
-        result = opt.optimize([p], periods, base_year=2026)
+            if per.year in (2025, 2026):
+                per.budget_COP = 5_000_000_000
+        result = opt.optimize([p], periods, base_year=2020)
         seleccionado = next((s for s in result.selected if s["project_id"] == "P920"), None)
         self.assertIsNotNone(
             seleccionado,
-            "El proyecto debía poder ejecutarse en 2026-2027 con su gasto "
-            "reanclado; si esto falla, R1 sigue buscando 2028/2029 literales.",
+            "Solo 2025/2026 tienen cupo simultáneo para los dos tramos "
+            "reanclados; si esto falla, R1 sigue buscando 2028/2029 literales.",
         )
+        # assertIsNotNone por sí solo no discrimina: bajo el bug viejo, un
+        # proyecto con capex=0 y perfil no-literal parece costar 0 en TODAS
+        # las vigencias (no solo en 2028/2029), así que siempre "cabe" en
+        # cualquier ventana con presupuesto. Lo que sí distingue el arreglo
+        # es que el monto total reportado sea el perfil completo, no 0.
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        )
+        self.assertAlmostEqual(total_consumido, 8_000_000_000, delta=1.0)
 
     def test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana(self):
         """Un perfil que declara SOLO el primer año de una ventana de
@@ -444,24 +454,48 @@ legado de CAPEX escalar no cambia de comportamiento."
         )
         periods = [ResourcePeriod(year=y, budget_COP=7_000_000_000) for y in (2026, 2027)]
         result = opt.optimize([p], periods, base_year=2026)
-        total_consumido = sum(
-            per["used_COP"] for per in result.budget_util.values()
-        ) if hasattr(result, "budget_util") else None
         # El total consumido en todo el plan no puede exceder el CAPEX
         # declarado (6.000M) — si el año 2027 cobra ADEMÁS 3.000M por la
         # rama uniforme, el total sube a 9.000M.
-        self.assertIsNotNone(total_consumido)
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        )
         self.assertLessEqual(total_consumido, 6_000_000_000 + 1.0)
+
+    def test_enterprise_r12_totex_reancla_capex_by_year(self):
+        """R12 (TOTEX) debe reanclar capex_by_year al candidato igual que
+        R1 — antes, un proyecto con perfil explícito parecía costar 0 en
+        TOTEX para cualquier año candidato que no fuera exactamente el
+        declarado, dejándolo pasar el techo TOTEX cuando en realidad sí
+        debía contar."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P922", capex=0, exec_year=2028,
+            capex_by_year={2028: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=10_000_000_000,
+                           totex_budget_COP=1_000_000_000)  # techo bajo, aprieta
+            for y in (2025, 2026)
+        ]
+        result = opt.optimize([p], periods, base_year=2025)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P922"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con techo TOTEX de 1.000M y CAPEX real de 4.000M, el proyecto "
+            "no debía caber en ningún año — si se seleccionó, R12 sigue "
+            "viendo el perfil reanclado como gratis (costo 0).",
+        )
 ```
 
-- [ ] **Step 2: Confirmar que fallan**
+- [x] **Step 2: Confirmar que fallan**
 
-Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio.test_enterprise_r1_reancla_perfil_al_candidato test_suite_epm_full.S31_PerfilCapexPorAnio.test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana -v`
-Expected: la primera FALLA (`seleccionado` es `None` — el proyecto queda postergado porque R1 solo lo ve gastando en 2028/2029, sin presupuesto ahí). La segunda puede pasar o fallar según los datos exactos del reporte de utilización — si pasa, es evidencia débil (falta de cobertura), no evidencia de que el defecto no existe; ambas quedan confirmadas por la campaña de mutación de la Task 5.
+Contra el código sin corregir (commit `c733ed0`), verificado con `git stash`: `test_enterprise_r1_reancla_perfil_al_candidato` falla (`0.0 != 8_000_000_000`), `test_enterprise_r12_totex_reancla_capex_by_year` falla (el proyecto se selecciona cuando no debía). `test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana` es evidencia más débil por sí sola (puede pasar por casualidad según los datos) — la campaña de mutación de la Task 5 es la que la confirma de fondo.
 
-- [ ] **Step 3: Corregir R1**
+- [x] **Step 3: Corregir R1**
 
-En `epm_core.py:7016-7034`, reemplazar:
+En `epm_core.py` (originalmente líneas 7016-7034, la ubicación exacta se desplaza con cada edición previa — ubicar por el comentario `# ── R1: Presupuesto por vigencia`), reemplazar la búsqueda de año calendario literal:
 
 ```python
         # ── R1: Presupuesto por vigencia ──────────────────────────────────────
@@ -485,7 +519,7 @@ En `epm_core.py:7016-7034`, reemplazar:
                          f"Presupuesto_{period.year}")
 ```
 
-por:
+por la versión que reancla `cap_by_year` al candidato `s` y nunca mezcla con la rama uniforme dentro de la misma ventana:
 
 ```python
         # ── R1: Presupuesto por vigencia ──────────────────────────────────────
@@ -522,39 +556,92 @@ por:
                          f"Presupuesto_{period.year}")
 ```
 
-- [ ] **Step 4: Confirmar que pasan**
+- [x] **Step 3b: Reanclar `capex_matrix` (alimenta `budget_utilization`, el reporte de utilización)**
 
-Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 11 pruebas (incluye la ampliación de alcance documentada más abajo — R12 y el reporte de utilización).
+Hallado durante la ejecución: el mismo defecto en la matriz que precomputa VNT/CAPEX por candidato (busca por el comentario `# ── Pre-calcular VNT(i,t) y CAPEX(i,t)`). No afecta ninguna decisión del MILP (R1 ya decide bien de forma independiente), pero el reporte de utilización mostraba 0 para cualquier candidato distinto del año calendario literal declarado. Reemplazar:
 
-- [ ] **Step 5: Correr toda la suite**
-
-Run: `python test_suite_epm_full.py`
-Expected: `OK` — sin regresiones. El camino uniforme (`else`) de R1 no cambió su lógica (`t_rel = t-s`, `0 <= t_rel < cy`), solo se reescribió sin alterar el resultado para proyectos sin `capex_by_year`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add epm_core.py test_suite_epm_full.py
-git commit -m "fix: R1 (EnterpriseOptimizer) reancla capex_by_year y no mezcla ramas
-
-Dos defectos preexistentes en la restricción de presupuesto: (1) el
-perfil explícito nunca se reanclaba al año candidato que el MILP estaba
-probando — solo 'existía' en los años calendario literales declarados;
-(2) un año de la ventana de construcción sin tramo declarado caía al
-reparto uniforme del CAPEX total, cobrando presupuesto dos veces cuando
-el perfil era parcial. Ninguno de los dos fue introducido por el trabajo
-de esta rama — ambos predatan el perfil de CAPEX por año."
+```python
+            cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+            for t, period in enumerate(periods):
+                # CAPEX en esta vigencia si el proyecto inicia en t
+                if cap_by_year and period.year in cap_by_year:
+                    capex_matrix[i][t] = cap_by_year[period.year]
+                else:
+                    cy = max(1, proj.construction_years)
+                    # Distribuir uniformemente sobre cy años desde t
+                    capex_matrix[i][t] = cap_total / cy
 ```
 
-**Ampliación de alcance hallada durante la ejecución de esta Task (aprobada por el usuario):** el mismo patrón de "busca el año calendario literal en vez de reanclar al candidato" apareció en dos lugares más de `EnterpriseOptimizer.optimize()`, además de R1:
+por (nota: la primera versión de esta corrección usó `cap_by_year.get(declared, 0.0)`, que solo devuelve el tramo del año declarado y subestima un perfil de varios tramos — se corrigió a `sum(...)` tras encontrar esto en la propia prueba `test_enterprise_r1_reancla_perfil_al_candidato`):
 
-1. **La matriz que alimenta `budget_utilization`** (el reporte de utilización de presupuesto, ~línea 7005-7013) — no afecta ninguna decisión del MILP (R1 ya decide bien), pero el reporte mostraba 0% de utilización para un proyecto con perfil explícito en cualquier año candidato distinto del literal declarado.
-2. **R12 (restricción TOTEX)**, ~línea 7453-7459 — esta sí es una restricción real del MILP: un proyecto con perfil explícito parecía costar 0 en TOTEX para cualquier candidato no-literal, pudiendo colarse bajo un techo TOTEX que en realidad debía superar.
+```python
+            cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+            for t, period in enumerate(periods):
+                if cap_by_year:
+                    # A diferencia de la rama uniforme (que reporta
+                    # cap_total/cy, un año de gasto), aquí se reporta el
+                    # TOTAL del perfil, atribuido al candidato — reportar
+                    # solo el tramo del año declarado subestimaba proyectos
+                    # multi-tramo de forma parcial. Asimetría preexistente
+                    # entre las dos ramas, documentada aquí, no armonizada
+                    # — fuera de alcance de esta corrección.
+                    capex_matrix[i][t] = sum(cap_by_year.values())
+                else:
+                    cy = max(1, proj.construction_years)
+                    capex_matrix[i][t] = cap_total / cy
+```
 
-Ambos se corrigen con el mismo patrón simplificado que ya usaba (y sigue usando) la rama uniforme en estos dos puntos: un solo valor por candidato — el tramo declarado para el año de arranque (offset 0), no un ledger multi-año completo. Ninguno de los dos intenta reconstruir un desglose año-por-año dentro de esta estructura de un-solo-valor; eso sería una revisión más profunda de `capex_matrix`/R12, fuera de alcance de esta Task.
+- [x] **Step 3c: Reanclar R12 (restricción TOTEX)**
 
-También se corrigió el escenario de `test_enterprise_r1_reancla_perfil_al_candidato`: la ventana original (2026-2030) dejaba que el candidato del borde (2030) truncara un tramo contra el límite del horizonte visible — comportamiento intencional del diseño (sección 5 del spec: un tramo fuera de ventana no consume cupo de ESTE plan), pero que confundía esta prueba específica al hacerla pasar por una razón débil. Se corrigió acotando el cupo presupuestal a una ventana interior (2025-2026 dentro de un horizonte 2020-2035) donde ningún candidato trunca ningún tramo.
+Hallado durante la ejecución: mismo defecto en una restricción real del MILP (no solo reportería) — busca por el comentario `# ── R12: TOTEX por vigencia`. Reemplazar:
+
+```python
+                for i, proj in enumerate(projects):
+                    cy = max(1, proj.construction_years)
+                    cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+                    if cap_by_year and period.year in cap_by_year:
+                        capex_this = cap_by_year[period.year]
+                    else:
+                        capex_this = proj.costs.capex_COP / cy
+```
+
+por:
+
+```python
+                for i, proj in enumerate(projects):
+                    cy = max(1, proj.construction_years)
+                    cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+                    declared = proj.declared_execution_year or proj.execution_year
+                    # Mismo patrón que capex_matrix (Step 3b): se usa el
+                    # total del perfil, no solo el tramo declarado — R12
+                    # solo carga TOTEX en la vigencia de inicio (s=t), así
+                    # que atribuye el costo completo del proyecto a ese
+                    # único candidato, igual que capex_matrix.
+                    if cap_by_year:
+                        capex_this = sum(cap_by_year.values())
+                    else:
+                        capex_this = proj.costs.capex_COP / cy
+```
+
+- [x] **Step 4: Confirmar que pasan**
+
+Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
+Expected: `OK` con 11 pruebas.
+
+- [x] **Step 5: Correr toda la suite**
+
+Run: `python test_suite_epm_full.py`
+Expected: `OK` — 243 pruebas. El camino uniforme no cambió su lógica en ninguno de los tres puntos, solo se reescribió sin alterar el resultado para proyectos sin `capex_by_year`.
+
+- [x] **Step 6: Commits**
+
+Tres commits documentan el historial completo de esta Task (no se aplanaron en uno solo, para que el porqué de cada corrección quede trazable):
+
+```
+1ebb968  fix: R1 (EnterpriseOptimizer) reancla capex_by_year y no mezcla ramas
+76a272d  fix: reanclar capex_by_year en R12 y en el reporte de utilización
+094dd8b  fix: capex_matrix reporta el total del perfil, no solo el tramo declarado
+```
 
 **Hallazgo registrado, no corregido en esta Task:** un proyecto obligatorio de valor neto negativo (que el MILP debe ejecutar igual) tiene incentivo a diferirse hasta el último período visible de cualquier horizonte finito, porque ahí un tramo de construcción de varios años cae fuera de la ventana y no consume presupuesto — el mismo comportamiento intencional de la sección 5, pero explotado por el objetivo de minimización de costo. Se verificó que esto **ya existía antes de este plan**, incluso para CAPEX legado sin perfil explícito — no lo introdujo esta Task. Corregirlo de fondo exige una decisión de diseño (acotar qué candidatos son válidos según si su ventana de construcción cabe completa en el horizonte, o documentar el límite explícitamente) — queda como asunto abierto nuevo para el registro, no como parte de este plan.
 
