@@ -111,6 +111,8 @@ else:
 
 Se reporta `capex_schedule_pv_COP: dict[int, float]` (el `capex_pv_por_tramo` de arriba, con año calendario como clave en ambas ramas) junto a los campos existentes `capex_COP` y `capex_pv_COP`, para que la auditoría pueda ver dónde quedó cada peso.
 
+**Nota de semántica de la clave (hallada en revisión de calidad):** las claves de la rama `capex_by_year` son los años **tal como se declararon**, no el año en que cada tramo aterriza en el escenario evaluado — `_evaluate_inner()` no conoce el año base del plan (solo `deferral_years`, un conteo de años, no un año calendario), así que no puede calcular un año de aterrizaje absoluto. La rama legada sí usa un año de escenario real (`execution_year`) como clave. Las dos ramas no son directamente comparables por la clave; se documenta así deliberadamente en vez de forzar una reanclaje que el motor no tiene información para calcular correctamente — no hay ningún consumidor de este campo todavía que dependa de lo contrario.
+
 ## 5. Presupuesto (ambos optimizadores MILP)
 
 **Optimizador simple** ([epm_core.py:5510-5523](../../../epm_core.py#L5510-L5523)): hoy, cuando hay `capex_by_year`, busca coincidencia literal de año calendario (`bp.year in capex_by_year`) sin reanclar. Se reemplaza por:
