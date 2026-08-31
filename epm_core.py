@@ -2253,6 +2253,21 @@ class ProjectInput:
       - Rehabilitación de unidad de generación (parada mayor)
     """
 
+    declared_execution_year: int = 0
+    """Año de ejecución tal como fue declarado originalmente — antes de que
+    cualquier escaneo del MILP o del año óptimo pruebe un año candidato
+    distinto sobrescribiendo execution_year. Se captura una sola vez en
+    __post_init__ si no se declara explícitamente. Es el ancla contra la que
+    se mide el offset de cada tramo de costs.capex_by_year: sin este campo,
+    un perfil de CAPEX explícito no puede reanclarse cuando el motor prueba
+    un año de arranque distinto — se queda buscando literalmente los años
+    calendario originales y el escaneo lo ve como si casi no costara nada
+    en cualquier otro año."""
+
+    def __post_init__(self):
+        if self.declared_execution_year == 0:
+            self.declared_execution_year = self.execution_year
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN B2: EARNED VALUE MANAGEMENT (Continuous Planning)
@@ -4153,19 +4168,62 @@ class ValueEngine:
         cod = timing["cod_total_COP"]
 
         # 4. Costos (CAPEX + OPEX incremental como medidas negativas)
-        # CAPEX se infla por años de postergación (inflación obra civil)
         capex_inflation_rate = self.config.get("capex_inflation_rate", 0.04)
-        capex_base = project.costs.capex_COP
-        capex = capex_base * ((1.0 + capex_inflation_rate) ** deferral_years) if deferral_years > 0 else capex_base
 
-        # CAPEX a valor presente. Se inflaba a pesos del año de ejecución y se
-        # restaba contra beneficios en pesos de hoy, sin descontarlo de vuelta:
-        # a 5 años de diferimiento el motor le cobraba al proyecto un 57% más
-        # de lo que ese desembolso vale hoy. `capex` (nominal) se conserva para
-        # los umbrales de proporcionalidad, que miden tamaño de obra, no valor.
-        capex_pv = capex
-        if deferral_years > 0:
-            capex_pv = capex / ((1.0 + self.wacc) ** deferral_years)
+        if project.costs.capex_by_year:
+            # Perfil explícito por año calendario, pesos nominales ya
+            # inflados por el analista — el motor solo descuenta, no infla.
+            #
+            # offset_k = año_k − declared_execution_year: la FORMA del
+            # perfil, fija desde que se declaró. Cada tramo se descuenta a
+            # (offset_k + deferral_years) años desde hoy.
+            #
+            # El desplazamiento temporal usa deferral_years, EXACTAMENTE
+            # como el CAPEX legado (rama else) y como los otros tres
+            # componentes de la ecuación (beneficios, riesgo, CoD) — es la
+            # única referencia temporal compartida de toda la evaluación.
+            # execution_year NO participa en esta fórmula.
+            #
+            # (Corregido tras revisión de calidad: la primera versión usaba
+            # delta = execution_year − declared_execution_year en vez de
+            # deferral_years. EnterpriseOptimizer reasigna execution_year AL
+            # CANDIDATO Y ADEMÁS pasa su propio deferral_years — dos
+            # referencias que solo coinciden por casualidad. Un proyecto
+            # declarado en 2029 evaluado como candidato en el año base del
+            # plan (deferral_years=0) daba capex_pv 31% por encima del
+            # nominal con la versión anterior.)
+            declared = project.declared_execution_year or project.execution_year
+            capex = sum(project.costs.capex_by_year.values())
+            # NOTA DE AUDITORÍA (hallada en revisión de calidad): las claves
+            # de capex_pv_por_tramo son los años calendario TAL COMO SE
+            # DECLARARON — no el año en que el tramo aterriza en el
+            # escenario que se está evaluando. _evaluate_inner() no conoce
+            # el año base del plan (solo deferral_years, un conteo de años,
+            # no un año calendario), así que no puede calcular un "año de
+            # aterrizaje" absoluto aquí dentro. Léase como "el valor
+            # presente del tramo que el analista declaró para el año X",
+            # no como "lo que este tramo cuesta en el año X de este
+            # escenario" — la rama legada (abajo) sí usa un año de
+            # escenario real (execution_year) como clave, así que las dos
+            # ramas no son directamente comparables por la clave.
+            capex_pv_por_tramo = {
+                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))
+                for year, monto in project.costs.capex_by_year.items()
+            }
+            capex_pv = sum(capex_pv_por_tramo.values())
+        else:
+            # Camino legado — sin cambios de comportamiento.
+            capex_base = project.costs.capex_COP
+            capex = capex_base * ((1.0 + capex_inflation_rate) ** deferral_years) if deferral_years > 0 else capex_base
+            # CAPEX a valor presente. Se inflaba a pesos del año de ejecución y se
+            # restaba contra beneficios en pesos de hoy, sin descontarlo de vuelta:
+            # a 5 años de diferimiento el motor le cobraba al proyecto un 57% más
+            # de lo que ese desembolso vale hoy. `capex` (nominal) se conserva para
+            # los umbrales de proporcionalidad, que miden tamaño de obra, no valor.
+            capex_pv = capex
+            if deferral_years > 0:
+                capex_pv = capex / ((1.0 + self.wacc) ** deferral_years)
+            capex_pv_por_tramo = {project.execution_year: capex_pv}
 
         # OPEX incremental: anualidad plana, sin rezago y sin crecimiento.
         # Dos decisiones abiertas pendientes de ASPD, medidas y documentadas en
@@ -4252,6 +4310,7 @@ class ValueEngine:
             "model_level": model_level,
             "capex_COP": capex,                 # nominal del año de ejecución
             "capex_pv_COP": capex_pv,           # el que entra a la ecuación
+            "capex_schedule_pv_COP": capex_pv_por_tramo,  # cada tramo, para auditoría
             "opex_incremental_npv_COP": opex_npv,
             "analysis_horizon_years": self.horizon,
             "horizon_asset_years": horizon_asset,
@@ -5507,25 +5566,67 @@ class PortfolioOptimizer:
         capex_matrix = np.zeros((n_proj, n_years))
         capex_arr = np.zeros(n_proj)
 
+        # capex_matrix[i, k] es RELATIVO: cuánto gasta el proyecto i, k años
+        # después de cualquier candidato que se pruebe como arranque. La
+        # Restricción 1 (más abajo) ya asume esta semántica al desplazarla
+        # por t_rel = t-s; antes, el camino uniforme anclaba en el índice
+        # del execution_year DECLARADO en vez de en 0, desplazándola dos
+        # veces para cualquier candidato que no fuera el primer período del
+        # plan. capex_by_year tenía el mismo problema, buscando además el
+        # año calendario literal en vez de reanclarse.
         for i, proj in enumerate(projects):
             capex_arr[i] = proj.costs.capex_COP
-            # Leer distribución de CAPEX por vigencia si está disponible
             capex_by_year = getattr(proj.costs, 'capex_by_year', {})
-            for t, bp in enumerate(budget_periods):
-                if capex_by_year and bp.year in capex_by_year:
-                    # Distribución explícita definida por el analista (datos reales)
-                    capex_matrix[i, t] = capex_by_year[bp.year]
-                else:
-                    # Distribución uniforme sobre construction_years
-                    cy = max(1, proj.construction_years)
-                    start_t = year_map.get(proj.execution_year, 0)
-                    if start_t <= t < start_t + cy:
-                        capex_matrix[i, t] = capex_arr[i] / cy
-            # Evaluar VNT para cada año de inicio posible
+            declared = proj.declared_execution_year or proj.execution_year
+            if capex_by_year:
+                # capex_arr[i] pasa a ser el total real del perfil — de lo
+                # contrario "selected" reporta capex_COP=0 (el escalar sin
+                # usar) para un proyecto de perfil explícito, aunque el
+                # motor sí lo haya contabilizado bien internamente. No
+                # afecta la rama uniforme (else, abajo): esta reasignación
+                # solo corre cuando capex_by_year existe.
+                capex_arr[i] = sum(capex_by_year.values())
+                for year, monto in capex_by_year.items():
+                    k = year - declared
+                    if 0 <= k < n_years:
+                        capex_matrix[i, k] += monto
+            else:
+                cy = max(1, proj.construction_years)
+                for k in range(min(cy, n_years)):
+                    capex_matrix[i, k] = capex_arr[i] / cy
+            # Evaluar VNT para cada año de inicio posible.
+            #
+            # deferral_years se calcula y se pasa explícitamente — antes
+            # este bucle llamaba evaluate(proj) sin él, que por defecto usa
+            # deferral_years=0 SIEMPRE, sin importar qué candidato bp.year
+            # se esté probando. Verificado empíricamente antes de esta
+            # corrección: el VNT de un proyecto con CAPEX legado apenas
+            # variaba entre años candidatos (~0,1-0,2% por año, no un
+            # descuento económico real) — el escaneo de año óptimo de este
+            # optimizador era casi inerte.
+            #
+            # CORRECCIÓN (hallada en la revisión final de todo el trabajo):
+            # la primera versión de este cambio usaba el parámetro base_year
+            # que optimize() recibe, afirmando —incorrectamente— que así
+            # replicaba lo que ya hace EnterpriseOptimizer. No es cierto:
+            # EnterpriseOptimizer calcula deferral = period.year - min(years)
+            # (epm_core.py, bucle de precálculo de VNT), es decir, contra el
+            # año MÁS TEMPRANO DE LAS VIGENCIAS RECIBIDAS, no contra el
+            # parámetro base_year — ese parámetro ahí solo se usa para
+            # Continuous Planning (EVM/ETC), nunca para deferral_years. Si un
+            # llamador pasara budget_periods cuyo primer año no coincide con
+            # base_year (p. ej. re-planeación a mitad de año), los dos
+            # optimizadores habrían dado VNT distinto para el mismo proyecto
+            # — verificado empíricamente: ~18% de diferencia en un caso de
+            # prueba con esa combinación. Se corrige usando min(bp.year for
+            # bp in budget_periods), la misma referencia que ya usa
+            # EnterpriseOptimizer, en vez de base_year.
+            _plan_base_year = min(bp.year for bp in budget_periods)
             for t, bp in enumerate(budget_periods):
                 original_exec = proj.execution_year
                 proj.execution_year = bp.year
-                r = self.engine.evaluate(proj)
+                deferral = max(0, bp.year - _plan_base_year)
+                r = self.engine.evaluate(proj, deferral_years=deferral)
                 net_values[i, t] = r["net_value_COP"]
                 proj.execution_year = original_exec
 
@@ -6944,13 +7045,27 @@ class EnterpriseOptimizer:
             pm_req[i] = self._estimate_person_months(cap_mm)
 
             cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+            declared = proj.declared_execution_year or proj.execution_year
             for t, period in enumerate(periods):
-                # CAPEX en esta vigencia si el proyecto inicia en t
-                if cap_by_year and period.year in cap_by_year:
-                    capex_matrix[i][t] = cap_by_year[period.year]
+                # capex_matrix[i][t] es UN SOLO número por candidato (no un
+                # ledger multi-año) — igual que la rama uniforme, que solo
+                # reporta cap_total/cy (un año de gasto), esta rama reporta
+                # el tramo declarado para el año de arranque (offset 0),
+                # reanclado. Antes: buscaba period.year literal en
+                # cap_by_year, así que para cualquier candidato que no
+                # fuera exactamente el año declarado, reportaba 0 aunque el
+                # proyecto sí tuviera costo real ahí.
+                if cap_by_year:
+                    # A diferencia de la rama uniforme (que reporta cap_total/cy,
+                    # un año de gasto), aquí se reporta el TOTAL del perfil —
+                    # reportar solo el tramo del año declarado subestimaba
+                    # proyectos multi-tramo de la misma forma parcial que el
+                    # defecto original, solo que menos severa. Asimetría
+                    # preexistente entre las dos ramas, documentada aquí, no
+                    # armonizada — fuera de alcance de esta corrección.
+                    capex_matrix[i][t] = sum(cap_by_year.values())
                 else:
                     cy = max(1, proj.construction_years)
-                    # Distribuir uniformemente sobre cy años desde t
                     capex_matrix[i][t] = cap_total / cy
 
                 # VNT si inicia en este año (: incluir años de postergación)
@@ -7014,21 +7129,34 @@ class EnterpriseOptimizer:
                            for i in range(n) for t in range(T)), "VNT_total"
 
         # ── R1: Presupuesto por vigencia ──────────────────────────────────────
+        # Antes: si cap_by_year no cubría TODOS los años de la ventana [0,cy),
+        # los años sin declarar caían al reparto uniforme del total —
+        # cobrando dos veces. Y el año calendario declarado nunca se
+        # reanclaba al candidato s que el MILP está probando: un proyecto
+        # con capex_by_year solo podía "verse" gastando en los años
+        # calendario literales que el analista escribió.
         for t, period in enumerate(periods):
-            # CAPEX que consume proyecto i si inicia en s y estamos en t
             expr = []
             for i in range(n):
-                cy = max(1, projects[i].construction_years)
-                cap_by_year = getattr(projects[i].costs, 'capex_by_year', {}) or {}
+                proj = projects[i]
+                cy = max(1, proj.construction_years)
+                cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+                declared = proj.declared_execution_year or proj.execution_year
                 for s in range(T):
-                    t_rel = t - s
-                    if 0 <= t_rel < cy:
-                        if cap_by_year and years[t] in cap_by_year:
-                            coef = cap_by_year.get(years[t], 0)
-                        else:
-                            coef = projects[i].costs.capex_COP / cy
-                        if coef > 0:
-                            expr.append(coef * x[i][s])
+                    if cap_by_year:
+                        # Perfil explícito: se reancla completo al candidato s.
+                        # Un año de la ventana sin tramo declarado consume 0 —
+                        # nunca cae al reparto uniforme del total.
+                        delta = years[s] - declared
+                        coef = sum(
+                            monto for year_k, monto in cap_by_year.items()
+                            if year_k + delta == years[t]
+                        )
+                    else:
+                        t_rel = t - s
+                        coef = proj.costs.capex_COP / cy if 0 <= t_rel < cy else 0.0
+                    if coef > 0:
+                        expr.append(coef * x[i][s])
             if expr:
                 prob += (pulp.lpSum(expr) <= period.budget_COP,
                          f"Presupuesto_{period.year}")
@@ -7381,8 +7509,21 @@ class EnterpriseOptimizer:
                 for i, proj in enumerate(projects):
                     cy = max(1, proj.construction_years)
                     cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
-                    if cap_by_year and period.year in cap_by_year:
-                        capex_this = cap_by_year[period.year]
+                    declared = proj.declared_execution_year or proj.execution_year
+                    # Mismo defecto que tenía R1 antes de corregirse: buscaba
+                    # period.year literal en vez de reanclar al candidato t.
+                    # R12 solo carga TOTEX en la vigencia de inicio (s=t, ver
+                    # comentario de abajo), así que — igual que capex_matrix
+                    # arriba — solo puede representar un valor por candidato,
+                    # no un ledger multi-año: se usa el tramo declarado para
+                    # el año de arranque (offset 0).
+                    if cap_by_year:
+                        # Mismo patrón que capex_matrix: se usa el total del
+                        # perfil, no solo el tramo declarado — R12 solo
+                        # carga TOTEX en la vigencia de inicio (s=t), así
+                        # que atribuye el costo completo del proyecto a ese
+                        # único candidato, igual que capex_matrix.
+                        capex_this = sum(cap_by_year.values())
                     else:
                         capex_this = proj.costs.capex_COP / cy
                     opex_npv = (getattr(proj.costs, "opex_incremental_COP_year", 0.0)
@@ -7460,7 +7601,13 @@ class EnterpriseOptimizer:
                     val = pulp.value(x[i][t])
                     if val is not None and val > 0.5:
                         nv = vnt[i][t]
-                        cap_total = proj.costs.capex_COP
+                        # Total real: si hay perfil explícito, capex_COP es
+                        # el escalar sin usar (0 típicamente) — reportar ese
+                        # valor en vez del total del perfil deja "selected"
+                        # con capex_COP=0 para un proyecto que el motor sí
+                        # contabilizó bien internamente.
+                        _cap_by_year_rep = getattr(proj.costs, 'capex_by_year', {}) or {}
+                        cap_total = sum(_cap_by_year_rep.values()) if _cap_by_year_rep else proj.costs.capex_COP
                         # Info de precedencia para el reporte
                         prec_id = getattr(proj, "precedent_project_id", "")
                         lag_yr  = getattr(proj, "min_lag_years", 0)

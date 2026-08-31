@@ -47,6 +47,7 @@ from epm_core import (
     PlanVersion,
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
+    PortfolioOptimizer, BudgetPeriod,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
     EVMEngine, OutageCalendar, WorkflowEngine,
     PlanVersionStore,
@@ -85,6 +86,7 @@ def _make_project(
     precedent_id="", min_lag=0,
     mutual_exclusion_ids=None, exclusion_group_id=None,
     require_outage_alignment=False,
+    capex_by_year=None, declared_execution_year=0,
 ) -> ProjectInput:
     if drivers is None:
         drivers = [_make_driver("VD-1", [_make_sc("VD-1-A", delta=100.0)])]
@@ -92,7 +94,8 @@ def _make_project(
         id=pid, name=name or pid,
         business_unit=bu,
         investment_type=inv_type,
-        costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex_incremental),
+        costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex_incremental,
+                        capex_by_year=capex_by_year or {}),
         execution_year=exec_year,
         optimal_year=exec_year,
         drivers=drivers,
@@ -101,6 +104,7 @@ def _make_project(
         is_committed=is_committed,
         committed_year=committed_year,
         construction_years=construction_years,
+        declared_execution_year=declared_execution_year,
     )
     p.asset_id = asset_id
     p.precedent_project_id = precedent_id
@@ -3794,6 +3798,512 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
                  f"(descuento aplicado una vez). Si se parece a {duplicado:.6f}, "
                  f"el rezago de obra se esta cobrando dos veces."))
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S31 — PERFIL DE CAPEX POR AÑO (costs.capex_by_year)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class S31_PerfilCapexPorAnio(unittest.TestCase):
+    """CAPEX declarado por año calendario (costs.capex_by_year), valorado y
+    reanclado correctamente cuando el motor prueba un año de arranque
+    distinto al originalmente declarado."""
+
+    def setUp(self):
+        self.cfg = _cfg()
+        self.engine = ValueEngine(self.cfg)
+
+    def test_declared_execution_year_se_autocompleta(self):
+        """Sin declararlo explícitamente, toma el valor de execution_year."""
+        p = ProjectInput(
+            id="P900", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2029,
+        )
+        self.assertEqual(p.declared_execution_year, 2029)
+
+    def test_declared_execution_year_explicito_se_respeta(self):
+        """Si se declara explícitamente, no se sobrescribe con execution_year."""
+        p = ProjectInput(
+            id="P901", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2029,
+            declared_execution_year=2027,
+        )
+        self.assertEqual(p.declared_execution_year, 2027)
+
+    def test_declared_execution_year_sobrevive_reasignacion_posterior(self):
+        """Si algo reasigna execution_year DESPUÉS de construir el objeto (lo
+        que hacen ambos optimizadores MILP al escanear años candidatos),
+        declared_execution_year no debe moverse — es la garantía sobre la
+        que se apoyan todas las pruebas de reanclaje de este grupo."""
+        p = ProjectInput(
+            id="P902", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2028,
+        )
+        p.execution_year = 2026  # simula lo que hace un bucle de escaneo MILP
+        self.assertEqual(p.declared_execution_year, 2028)
+
+    def test_capex_by_year_un_tramo_igual_al_legado(self):
+        """Un solo tramo en declared_execution_year debe dar exactamente el
+        mismo VNT que el camino legado con ese mismo CAPEX como escalar."""
+        p_legado = _make_project(pid="P910", capex=5_000_000_000, exec_year=2026)
+        r_legado = self.engine.evaluate(p_legado)
+
+        p_perfil = _make_project(
+            pid="P911", capex=0, exec_year=2026,
+            capex_by_year={2026: 5_000_000_000},
+        )
+        r_perfil = self.engine.evaluate(p_perfil)
+
+        self.assertAlmostEqual(
+            r_perfil["net_value_COP"], r_legado["net_value_COP"], delta=1.0,
+            msg="Un perfil de un solo tramo en el año declarado debe "
+                "coincidir al peso con el camino legado (regresión).",
+        )
+
+    def test_capex_by_year_multitramo_sin_escaneo(self):
+        """Perfil de dos tramos, sin ningún escaneo (execution_year ==
+        declared_execution_year): cada tramo se descuenta por separado desde
+        declared_execution_year, verificado con un oráculo independiente."""
+        p = _make_project(
+            pid="P912", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        wacc = self.engine._get_wacc(p.business_unit)
+
+        capex_pv_esperado = (
+            3_000_000_000 / ((1 + wacc) ** 0) +
+            2_000_000_000 / ((1 + wacc) ** 1)
+        )
+        cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
+
+        self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_by_year_se_reancla_con_deferral_years(self):
+        """El perfil se reancla vía deferral_years — la referencia temporal
+        compartida por toda la ecuación — no vía execution_year. Un perfil
+        declarado en declared_execution_year, evaluado con deferral_years=3,
+        debe descontarse exactamente 3 años más que sin diferir, igual que
+        haría el CAPEX legado con ese mismo deferral_years."""
+        p = _make_project(
+            pid="P913", capex=0, exec_year=2026,  # declarado en 2026
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+        )
+        r = self.engine.evaluate(p, deferral_years=3)
+        wacc = self.engine._get_wacc(p.business_unit)
+
+        # offset_k = year - declared: 0 y 1. deferral_years=3 se suma a cada uno.
+        capex_pv_esperado = (
+            3_000_000_000 / ((1 + wacc) ** (0 + 3)) +
+            2_000_000_000 / ((1 + wacc) ** (1 + 3))
+        )
+        cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
+
+        self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_by_year_convencion_enterprise_declarado_distinto_del_base(self):
+        """Réplica exacta de la convención real de EnterpriseOptimizer: se
+        reasigna execution_year AL CANDIDATO y se pasa deferral_years
+        relativo al año base del plan (no a declared_execution_year). Esta
+        es la prueba que hubiera atrapado el defecto original: con
+        declared_execution_year=2029 y un candidato = año base del plan
+        (deferral_years=0), el tramo declarado en 2029 debe valorarse SIN
+        descuento (offset=0, deferral_years=0) — no un 31% por encima del
+        nominal, que es lo que daba la fórmula con delta en vez de
+        deferral_years."""
+        p = _make_project(
+            pid="P915", capex=0, exec_year=2029,  # declarado en 2029
+            capex_by_year={2029: 1_000_000_000},
+        )
+        p.execution_year = 2026  # el MILP reasigna al candidato (año base del plan)
+        r = self.engine.evaluate(p, deferral_years=0)  # año base del plan → sin diferir
+        self.assertAlmostEqual(r["capex_pv_COP"], 1_000_000_000, delta=1.0)
+
+    def test_capex_schedule_pv_reportado_por_tramo(self):
+        """capex_schedule_pv_COP debe exponer cada tramo por separado, no
+        solo el total — es lo que permite auditar dónde quedó cada peso."""
+        p = _make_project(
+            pid="P914", capex=0, exec_year=2026,
+            capex_by_year={2026: 1_000_000_000, 2028: 1_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        self.assertIn(2026, r["capex_schedule_pv_COP"])
+        self.assertIn(2028, r["capex_schedule_pv_COP"])
+        self.assertAlmostEqual(
+            sum(r["capex_schedule_pv_COP"].values()), r["capex_pv_COP"], delta=1.0
+        )
+
+    def test_capex_cop_nominal_es_la_suma_del_perfil(self):
+        """r['capex_COP'] (nominal, sin descontar) debe ser la suma de los
+        tramos declarados — no el escalar capex_COP=0 sin usar. Alimenta
+        los umbrales de proporcionalidad; un descuido aquí no se veía en
+        ninguna otra prueba del grupo (todas verifican capex_pv_COP, el
+        valor descontado, no el nominal)."""
+        p = _make_project(
+            pid="P916", capex=0, exec_year=2026,
+            capex_by_year={2026: 1_000_000_000, 2028: 1_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        self.assertAlmostEqual(r["capex_COP"], 2_000_000_000, delta=1.0)
+
+    def test_ambos_optimizadores_coinciden_con_base_year_desalineado(self):
+        """PortfolioOptimizer y EnterpriseOptimizer deben dar el mismo VNT
+        para el mismo proyecto/vigencias, incluso cuando el parámetro
+        base_year NO coincide con el primer año de las vigencias.
+
+        Hallazgo de la revisión final de todo el trabajo: PortfolioOptimizer
+        usaba base_year para calcular deferral_years, mientras
+        EnterpriseOptimizer siempre usó min(years de las vigencias) — nunca
+        el parámetro base_year, que ahí solo sirve para Continuous
+        Planning. Los dos solo coincidían por casualidad en todos los
+        llamadores existentes, que siempre pasan base_year == min(vigencias).
+        Este caso lo rompe deliberadamente: solo hay cupo en 2032, y
+        base_year se declara en 2020 — muy lejos de 2030 (el primer año de
+        la ventana) y de 2032 (el año que realmente se selecciona)."""
+        periods_simple = (
+            [BudgetPeriod(year=y, budget_COP=0.0) for y in (2030, 2031)] +
+            [BudgetPeriod(year=2032, budget_COP=10_000_000_000)]
+        )
+        periods_ent = (
+            [ResourcePeriod(year=y, budget_COP=0.0) for y in (2030, 2031)] +
+            [ResourcePeriod(year=2032, budget_COP=10_000_000_000)]
+        )
+        p_simple = _make_project(pid="P940", capex=5_000_000_000, exec_year=2030, is_mandatory=True)
+        p_ent = _make_project(pid="P941", capex=5_000_000_000, exec_year=2030, is_mandatory=True)
+
+        r_simple = PortfolioOptimizer(config=self.cfg).optimize(
+            [p_simple], periods_simple, base_year=2020)
+        r_ent = EnterpriseOptimizer(config=self.cfg).optimize(
+            [p_ent], periods_ent, base_year=2020)
+
+        sel_simple = next(s for s in r_simple.selected if s["project_id"] == "P940")
+        sel_ent = next(s for s in r_ent.selected if s["project_id"] == "P941")
+
+        self.assertEqual(sel_simple["year"], 2032)
+        self.assertEqual(sel_ent["year"], 2032)
+        self.assertAlmostEqual(
+            sel_simple["net_value_COP"], sel_ent["net_value_COP"], delta=1.0,
+            msg="Los dos optimizadores deben acordar el mismo VNT para el "
+                "mismo escenario — si difieren, uno de los dos está usando "
+                "base_year (parámetro) y el otro min(vigencias) para "
+                "deferral_years, y no son la misma referencia salvo que "
+                "coincidan por casualidad.",
+        )
+
+    def test_enterprise_r1_reancla_perfil_al_candidato(self):
+        """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
+        seleccionarse arrancando en otro año — su gasto real debe caer
+        reanclado. Solo 2025/2026 tienen cupo (interior de la ventana, lejos
+        de ambos bordes) para que ningún candidato trunque un tramo contra
+        el límite del horizonte — eso confundiría esta prueba con el
+        comportamiento intencional de 'tramo fuera de ventana no consume
+        cupo' (spec sección 5), que es un caso distinto y no se toca aquí."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P920", capex=0, exec_year=2028, construction_years=2,
+            capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [ResourcePeriod(year=y, budget_COP=0.0) for y in range(2020, 2036)]
+        for per in periods:
+            if per.year in (2025, 2026):
+                per.budget_COP = 5_000_000_000
+        result = opt.optimize([p], periods, base_year=2020)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P920"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "Solo 2025/2026 tienen cupo simultáneo para los dos tramos "
+            "reanclados; si esto falla, R1 sigue buscando 2028/2029 literales.",
+        )
+        # assertIsNotNone por sí solo no discrimina: bajo el bug viejo, un
+        # proyecto con capex=0 y perfil no-literal parece costar 0 en TODAS
+        # las vigencias (no solo en 2028/2029), así que siempre "cabe" en
+        # cualquier ventana con presupuesto. Lo que sí distingue el arreglo
+        # es que el monto total reportado sea el perfil completo, no 0.
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        )
+        self.assertAlmostEqual(total_consumido, 8_000_000_000, delta=1.0)
+
+    def test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana(self):
+        """Un perfil que declara SOLO el primer año de una ventana de
+        construcción de 2 años no debe cobrar además el reparto uniforme
+        del total en el segundo año — eso contaría el CAPEX dos veces."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P921", capex=6_000_000_000, exec_year=2026, construction_years=2,
+            capex_by_year={2026: 6_000_000_000},  # 2027 deliberadamente sin declarar
+            is_mandatory=True,
+        )
+        periods = [ResourcePeriod(year=y, budget_COP=7_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        total_consumido = sum(
+            per["used_COP"] for per in result.budget_utilization.values()
+        )
+        # El total consumido en todo el plan no puede exceder el CAPEX
+        # declarado (6.000M) — si el año 2027 cobra ADEMÁS 3.000M por la
+        # rama uniforme, el total sube a 9.000M.
+        self.assertLessEqual(total_consumido, 6_000_000_000 + 1.0)
+
+    def test_enterprise_r12_totex_reancla_capex_by_year(self):
+        """R12 (TOTEX) debe reanclar capex_by_year al candidato igual que
+        R1 — antes, un proyecto con perfil explícito parecía costar 0 en
+        TOTEX para cualquier año candidato que no fuera exactamente el
+        declarado, dejándolo pasar el techo TOTEX cuando en realidad sí
+        debía contar."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P922", capex=0, exec_year=2028,
+            capex_by_year={2028: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=10_000_000_000,
+                           totex_budget_COP=1_000_000_000)  # techo bajo, aprieta
+            for y in (2025, 2026)
+        ]
+        result = opt.optimize([p], periods, base_year=2025)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P922"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con techo TOTEX de 1.000M y CAPEX real de 4.000M, el proyecto "
+            "no debía caber en ningún año — si se seleccionó, R12 sigue "
+            "viendo el perfil reanclado como gratis (costo 0).",
+        )
+
+    def test_enterprise_r12_totex_cuenta_todos_los_tramos(self):
+        """R12 debe sumar TODOS los tramos del perfil, no solo el primero —
+        con get(declared) en vez de sum(...), un proyecto de dos tramos
+        (4.000M + 4.000M) contaría solo 4.000M contra el techo TOTEX,
+        dejándolo colarse bajo un techo que en realidad debería superar."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P923", capex=0, exec_year=2025, construction_years=2,
+            capex_by_year={2025: 4_000_000_000, 2026: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=10_000_000_000,
+                           totex_budget_COP=5_000_000_000)  # cabe 1 tramo, no los 2
+            for y in (2025, 2026)
+        ]
+        result = opt.optimize([p], periods, base_year=2025)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P923"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con techo TOTEX de 5.000M y CAPEX real de 8.000M (dos "
+            "tramos), el proyecto no debía caber — si se seleccionó, R12 "
+            "solo está contando el primer tramo (4.000M), no el total.",
+        )
+
+    def test_portfolio_simple_uniforme_no_ancla_al_primer_periodo(self):
+        """Regresión del camino uniforme: un proyecto con construction_years=2
+        que arranca en el SEGUNDO período del plan (no en el primero) debe
+        poder seleccionarse igual que si arrancara en el primero, siempre que
+        haya presupuesto en los años que realmente ocupa."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P930", capex=4_000_000_000, exec_year=2027,
+            construction_years=2, is_mandatory=True,
+        )
+        periods = [
+            BudgetPeriod(year=2026, budget_COP=0.0),
+            BudgetPeriod(year=2027, budget_COP=3_000_000_000),
+            BudgetPeriod(year=2028, budget_COP=3_000_000_000),
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P930"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "El proyecto debía caber en 2027-2028 (2.000M cada año); si "
+            "esto falla, la matriz de CAPEX sigue anclada al índice del "
+            "primer período en vez de al candidato que se prueba.",
+        )
+        # assertIsNotNone por sí solo no discrimina aquí: bajo el bug viejo,
+        # el proyecto igual queda "seleccionado", pero en 2026 — el único
+        # año con presupuesto CERO. Eso pasa porque la matriz anclada al
+        # índice literal del año declarado (2027) deja el desplazamiento
+        # relativo de la Restricción 1 apuntando a celdas vacías cuando el
+        # candidato probado es 2026, así que el solver lo ve "gratis" ahí.
+        # El año seleccionado sí distingue: 2026 (bug, presupuesto cero) vs.
+        # 2027/2028 (arreglado, dentro de las vigencias con cupo real).
+        self.assertIn(
+            seleccionado["year"], (2027, 2028),
+            "El proyecto no debía poder seleccionarse en 2026 (presupuesto "
+            "cero ese año); si aparece ahí, la matriz de CAPEX sigue "
+            "reportando el proyecto como gratis para ese candidato.",
+        )
+
+    def test_portfolio_simple_reancla_capex_by_year(self):
+        """Mismo caso que el de EnterpriseOptimizer, para el optimizador
+        simple: el perfil debe reanclarse al año candidato."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P931", capex=0, exec_year=2028, construction_years=2,
+            capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            BudgetPeriod(year=2026, budget_COP=5_000_000_000),
+            BudgetPeriod(year=2027, budget_COP=5_000_000_000),
+            BudgetPeriod(year=2028, budget_COP=0.0),
+            BudgetPeriod(year=2029, budget_COP=0.0),
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P931"), None)
+        self.assertIsNotNone(seleccionado)
+        # assertIsNotNone por sí solo no discrimina: bajo el bug viejo, el
+        # proyecto igual queda "seleccionado", pero en 2028 — un año con
+        # presupuesto CERO — porque capex_by_year se busca por año
+        # calendario literal en vez de reanclarse, y la Restricción 1
+        # termina apuntando a celdas vacías para ese candidato. El único
+        # año realmente viable dado este presupuesto es 2026 (2026 y 2027
+        # tienen 5.000M cada uno; el perfil reanclado necesita 4.000M en
+        # el año de arranque y 4.000M en el siguiente).
+        self.assertEqual(
+            seleccionado["year"], 2026,
+            "El único año con presupuesto suficiente en los dos años que "
+            "el perfil ocupa es 2026; si se seleccionó otro año (p.ej. "
+            "2028, que tiene presupuesto cero), capex_by_year no se está "
+            "reanclando al candidato.",
+        )
+
+    def test_portfolio_simple_capex_legado_sensible_al_candidato(self):
+        """Antes de este Task, el VNT que reporta optimize() para un
+        proyecto con CAPEX legado era casi idéntico sin importar el año
+        candidato, porque el bucle interno nunca pasaba deferral_years.
+        Forzar la selección en 2026 vs. forzar la selección en 2030 (vía
+        presupuesto disponible solo en cada uno) debe dar VNT reportados
+        claramente distintos — si no difieren, deferral_years no se está
+        calculando ni pasando en el bucle de optimize()."""
+        opt = PortfolioOptimizer(config=self.cfg)
+
+        def _forzar(anio_con_cupo):
+            p = _make_project(pid="P932", capex=5_000_000_000, exec_year=anio_con_cupo,
+                              is_mandatory=True)
+            periods = [
+                BudgetPeriod(year=y, budget_COP=10_000_000_000 if y == anio_con_cupo else 0.0)
+                for y in (2026, 2030)
+            ]
+            result = opt.optimize([p], periods, base_year=2026)
+            seleccionado = next(s for s in result.selected if s["project_id"] == "P932")
+            return seleccionado["net_value_COP"]
+
+        vnt_2026 = _forzar(2026)
+        vnt_2030 = _forzar(2030)
+        self.assertGreater(
+            abs(vnt_2026 - vnt_2030), abs(vnt_2026) * 0.01,
+            "El VNT reportado entre 2026 y 2030 debía diferir en más del "
+            "1% — si difiere menos, optimize() no está pasando "
+            "deferral_years real en su bucle interno.",
+        )
+
+    def test_portfolio_simple_selected_reporta_capex_real_del_perfil(self):
+        """selected['capex_COP'] y ['vei'] deben reflejar el total real del
+        perfil, no el escalar capex_COP=0 que declaran los proyectos de
+        perfil explícito — de lo contrario el reporte impreso muestra CAPEX
+        y VEI en cero para un proyecto que el motor sí contabilizó bien."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P933", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [BudgetPeriod(year=y, budget_COP=5_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next(s for s in result.selected if s["project_id"] == "P933")
+        self.assertAlmostEqual(seleccionado["capex_COP"], 5_000_000_000, delta=1.0)
+        # Oráculo independiente: VEI = VNT / CAPEX real (5.000M), no VNT/0.
+        vei_esperado = seleccionado["net_value_COP"] / 5_000_000_000
+        self.assertAlmostEqual(seleccionado["vei"], vei_esperado, delta=1e-6)
+
+    def test_enterprise_selected_reporta_capex_real_del_perfil(self):
+        """Mismo caso que el anterior, para EnterpriseOptimizer."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P934", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [ResourcePeriod(year=y, budget_COP=5_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next(s for s in result.selected if s["project_id"] == "P934")
+        self.assertAlmostEqual(seleccionado["capex_COP"], 5_000_000_000, delta=1.0)
+        # Oráculo independiente: VEI = VNT / CAPEX real (5.000M), no VNT/0.
+        vei_esperado = seleccionado["net_value_COP"] / 5_000_000_000
+        self.assertAlmostEqual(seleccionado["vei"], vei_esperado, delta=1e-6)
+
+    def test_enterprise_r1_no_mezcla_ramas_bajo_presion_de_presupuesto(self):
+        """Refuerzo de test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana:
+        esa prueba mide 'used_COP' de budget_utilization, que se calcula con
+        capex_matrix (una matriz DISTINTA de la que usa la restricción R1 en
+        el propio LP) — no discrimina si R1 vuelve a mezclar ramas porque esa
+        mezcla nunca se refleja ahí. Aquí se aprieta el presupuesto del año
+        NO declarado (2027) para que la restricción R1 misma sea la que
+        decida: con capex_by_year={2026: 6.000M} y capex_COP=6.000M como
+        escalar de respaldo (self.costs.capex_COP), si R1 vuelve a caer al
+        reparto uniforme para 2027 (año sin tramo declarado dentro de la
+        ventana de 2 años), exigiría 3.000M ahí — por encima del presupuesto
+        de 1.000M — y el proyecto (obligatorio) quedaría sin poder
+        seleccionarse en ningún año. Bajo el comportamiento correcto, 2027
+        no consume nada (el perfil no declara nada ahí) y el proyecto cabe
+        en 2026 sin problema."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P935", capex=6_000_000_000, exec_year=2026, construction_years=2,
+            capex_by_year={2026: 6_000_000_000},  # 2027 deliberadamente sin declarar
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=2026, budget_COP=7_000_000_000),
+            ResourcePeriod(year=2027, budget_COP=1_000_000_000),  # insuficiente para el reparto uniforme (3.000M)
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P935"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "El perfil no declara nada en 2027, así que R1 no debería exigir "
+            "presupuesto ahí; si el proyecto no se seleccionó, R1 sigue "
+            "mezclando ramas dentro de la ventana de construcción.",
+        )
+        self.assertEqual(seleccionado["year"], 2026)
+
+    def test_portfolio_uniforme_no_ancla_al_indice_del_declarado(self):
+        """Refuerzo de test_portfolio_simple_uniforme_no_ancla_al_primer_periodo:
+        esa prueba deja que la economía del proyecto (VNT) decida el año, y
+        no discrimina si la rama uniforme de capex_matrix vuelve a anclarse
+        al índice del execution_year declarado en vez de a 0 (relativo).
+        Aquí se fuerza la discriminación con presupuesto CERO en TODAS las
+        vigencias: bajo el comportamiento correcto, capex_matrix[i, 0] (el
+        costo en el propio año de arranque) es no-nulo para CUALQUIER
+        candidato — con presupuesto cero en todas partes, el proyecto
+        obligatorio no puede caber en ningún año y queda sin seleccionar.
+        Bajo el defecto (ancla al índice absoluto del año declarado, que no
+        es el primer período), capex_matrix[i, 0] queda en cero para todo
+        candidato salvo el que coincide exactamente con ese índice absoluto,
+        así que el proyecto se ve 'gratis' y se selecciona pese al
+        presupuesto cero."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P936", capex=4_000_000_000, exec_year=2028, construction_years=1,
+            is_mandatory=True,
+        )
+        periods = [BudgetPeriod(year=y, budget_COP=0.0) for y in (2026, 2027, 2028, 2029)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P936"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con presupuesto cero en todas las vigencias, un proyecto "
+            "obligatorio con costo real no puede caber en ningún año; si "
+            "quedó seleccionado, capex_matrix (rama uniforme) se está "
+            "anclando al índice del execution_year declarado en vez de "
+            "reportar el costo relativo a CUALQUIER candidato.",
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
