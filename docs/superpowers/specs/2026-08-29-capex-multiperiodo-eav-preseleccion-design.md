@@ -71,21 +71,31 @@ El bloque de CAPEX (hoy en [epm_core.py:4155-4180](../../../epm_core.py#L4155-L4
 ```python
 if project.costs.capex_by_year:
     # Perfil explícito, pesos nominales ya inflados por el analista.
-    # offset_k = año_k − declared_execution_year: la FORMA del perfil,
-    # fija desde que se declaró. delta = execution_year − declared_execution_year:
-    # cuánto se movió el arranque respecto a lo declarado (0 en la evaluación
-    # normal; distinto de 0 cuando un escaneo del MILP está probando un año
-    # candidato). Cada tramo se descuenta a (offset_k + delta) años desde hoy.
+    # offset_k = año_k − declared_execution_year: la FORMA del perfil, fija
+    # desde que se declaró — no cambia entre candidatos.
     #
-    # Deliberadamente NO se suma deferral_years aquí — mezclar ambos
-    # conteos de años sería sumarlos dos veces en el bucle del MILP de
-    # alcance empresarial, que ya pasa su propio deferral_years calculado
-    # desde una referencia distinta (el año más temprano del plan, no
-    # declared_execution_year). Ver nota en la sección 5.
-    delta = project.execution_year - project.declared_execution_year
+    # El desplazamiento temporal usa deferral_years, EXACTAMENTE como el
+    # CAPEX legado (rama else, abajo) y como los otros tres componentes de
+    # la ecuación (beneficios, riesgo, CoD) — es la única referencia
+    # temporal compartida de toda la evaluación, relativa al año base del
+    # plan. execution_year NO participa en esta fórmula.
+    #
+    # CORRECCIÓN (hallada en la revisión de calidad de la Tarea 2 de
+    # implementación): la primera versión de este diseño usaba
+    # delta = execution_year − declared_execution_year en vez de
+    # deferral_years, razonando que sumar deferral_years duplicaría el
+    # desplazamiento. Error: EnterpriseOptimizer reasigna execution_year AL
+    # CANDIDATO Y ADEMÁS pasa su propio deferral_years (relativo al año más
+    # temprano del plan) — son dos referencias distintas que solo coinciden
+    # por casualidad. Usar delta no evitaba un doble conteo; sustituía la
+    # referencia correcta (deferral_years, compartida por toda la ecuación)
+    # por una incorrecta (delta, aislada solo en esta rama). Caso verificado:
+    # un proyecto declarado en 2029 evaluado como candidato en el año base
+    # del plan (deferral_years=0) daba capex_pv 31% por encima del nominal
+    # en vez de exactamente el nominal.
     capex = sum(project.costs.capex_by_year.values())  # nominal, para proporcionalidad
     capex_pv_por_tramo = {
-        year: monto / ((1.0 + self.wacc) ** ((year - project.declared_execution_year) + delta))
+        year: monto / ((1.0 + self.wacc) ** ((year - project.declared_execution_year) + deferral_years))
         for year, monto in project.costs.capex_by_year.items()
     }
     capex_pv = sum(capex_pv_por_tramo.values())
@@ -142,7 +152,11 @@ for t, period in enumerate(periods):
         capex_matrix[i][t] = cap_total / cy
 ```
 
-**Sobre `deferral_years` en este optimizador:** el bucle ya calcula `deferral = max(0, period.year - min(years))` y lo pasa a `engine.evaluate(proj, deferral_years=deferral)` ([epm_core.py:6959-6961](../../../epm_core.py#L6959-L6961)). Esa referencia (`min(years)`, el año más temprano del plan) es distinta de `declared_execution_year` (el año que el analista escribió para ESTE proyecto). Por diseño, la valoración de la sección 4 ignora `deferral_years` en la rama de `capex_by_year` y usa únicamente `delta = execution_year − declared_execution_year` — evita que ambas referencias se sumen y desplacen el perfil dos veces. El camino legado (CAPEX escalar) no se toca: sigue usando `deferral_years` exactamente como hoy.
+**Sobre `deferral_years` en este optimizador:** el bucle ya calcula `deferral = max(0, period.year - min(years))` y lo pasa a `engine.evaluate(proj, deferral_years=deferral)` ([epm_core.py:6959-6961](../../../epm_core.py#L6959-L6961)) — esto ya es consistente con la fórmula corregida de la sección 4, que también usa `deferral_years`. No requiere cambio adicional: al reasignar `execution_year` Y pasar `deferral_years` calculado desde `min(years)`, la valoración ya recibe la referencia temporal correcta.
+
+**Corrección de alcance para el optimizador simple, hallada junto con el defecto de la sección 4:** el bucle de evaluación de VNT de `PortfolioOptimizer` ([epm_core.py:5525-5530](../../../epm_core.py#L5525-L5530)) reasigna `proj.execution_year` por candidato pero **nunca pasa `deferral_years`** — llama `self.engine.evaluate(proj)` a secas, que por defecto usa `deferral_years=0` siempre, sin importar qué candidato se esté probando. Se verificó empíricamente: con esta llamada, el VNT de un proyecto con CAPEX legado (sin `capex_by_year`) es prácticamente idéntico entre años candidatos (variación de ~0,1-0,2% por año, no un descuento económico real) — un límite preexistente de este optimizador, independiente de todo este diseño. Bajo la fórmula corregida de la sección 4, esto tiene una consecuencia directa: un proyecto con `capex_by_year` tampoco se reanclaría al probar candidatos distintos en este optimizador, porque `deferral_years` seguiría fijo en 0.
+
+La corrección es la misma para ambos casos (CAPEX legado y `capex_by_year`): el bucle debe calcular `deferral_years = max(0, bp.year - base_year)` (mismo patrón que ya usa `EnterpriseOptimizer`, reutilizando el parámetro `base_year` que `optimize()` ya recibe) y pasarlo a `self.engine.evaluate(proj, deferral_years=deferral_years)`. Esto también hace que el CAPEX legado se vuelva sensible al año candidato en este optimizador — un cambio de comportamiento real, pero corrige un defecto preexistente (el escaneo de año óptimo era económicamente casi inerte) en vez de introducir uno nuevo. `PortfolioOptimizer` no tenía pruebas antes de este plan, así que no hay ninguna regresión que romper.
 
 Un tramo cuyo `landing_year` cae fuera de la ventana de planeación presupuestal vigente no consume cupo de ESTE plan — pero ya se valoró completo en el VNT (sección 4).
 
