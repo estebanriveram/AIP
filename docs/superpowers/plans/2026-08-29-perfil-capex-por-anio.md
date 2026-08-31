@@ -853,6 +853,8 @@ ninguna prueba antes de este cambio; las de este commit son su primera
 cobertura."
 ```
 
+**Ampliación de alcance hallada en la revisión de calidad de esta Task (aprobada por el usuario):** `selected["capex_COP"]` y `selected["vei"]`, en **ambos** optimizadores (no solo `PortfolioOptimizer`), seguían usando el escalar `capex_COP` — que un proyecto de perfil explícito suele dejar en 0 — en vez del total real del perfil. Esto no afecta ninguna decisión del MILP (ya corregida), pero sí el reporte impreso (`print_portfolio_report`): un proyecto de perfil explícito aparecía con CAPEX y VEI en cero, aunque el motor lo hubiera contabilizado bien internamente. Es el mismo patrón que ya se corrigió para `budget_utilization` y R12 en la Task 3 — corregido aquí con el mismo criterio (usar la suma del perfil cuando existe, sin tocar la rama del escalar legado). Commit: `0230fcd`.
+
 ---
 
 ### Task 5: Campaña de mutación
