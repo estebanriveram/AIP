@@ -3938,6 +3938,19 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             sum(r["capex_schedule_pv_COP"].values()), r["capex_pv_COP"], delta=1.0
         )
 
+    def test_capex_cop_nominal_es_la_suma_del_perfil(self):
+        """r['capex_COP'] (nominal, sin descontar) debe ser la suma de los
+        tramos declarados — no el escalar capex_COP=0 sin usar. Alimenta
+        los umbrales de proporcionalidad; un descuido aquí no se veía en
+        ninguna otra prueba del grupo (todas verifican capex_pv_COP, el
+        valor descontado, no el nominal)."""
+        p = _make_project(
+            pid="P916", capex=0, exec_year=2026,
+            capex_by_year={2026: 1_000_000_000, 2028: 1_000_000_000},
+        )
+        r = self.engine.evaluate(p)
+        self.assertAlmostEqual(r["capex_COP"], 2_000_000_000, delta=1.0)
+
     def test_enterprise_r1_reancla_perfil_al_candidato(self):
         """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
         seleccionarse arrancando en otro año — su gasto real debe caer
