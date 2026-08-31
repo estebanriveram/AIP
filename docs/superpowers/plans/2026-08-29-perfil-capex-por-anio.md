@@ -855,6 +855,8 @@ cobertura."
 
 **Ampliación de alcance hallada en la revisión de calidad de esta Task (aprobada por el usuario):** `selected["capex_COP"]` y `selected["vei"]`, en **ambos** optimizadores (no solo `PortfolioOptimizer`), seguían usando el escalar `capex_COP` — que un proyecto de perfil explícito suele dejar en 0 — en vez del total real del perfil. Esto no afecta ninguna decisión del MILP (ya corregida), pero sí el reporte impreso (`print_portfolio_report`): un proyecto de perfil explícito aparecía con CAPEX y VEI en cero, aunque el motor lo hubiera contabilizado bien internamente. Es el mismo patrón que ya se corrigió para `budget_utilization` y R12 en la Task 3 — corregido aquí con el mismo criterio (usar la suma del perfil cuando existe, sin tocar la rama del escalar legado). Commit: `0230fcd`.
 
+**Corrección hallada en la revisión final de todo el trabajo (no de una Task individual):** el Step 3 de esta Task, arriba, justifica su cálculo de `deferral` afirmando *"Mismo patrón que ya usa EnterpriseOptimizer (deferral = period.year - min(years)), reutilizando el base_year que optimize() ya recibe"* — esa afirmación es **incorrecta**. `EnterpriseOptimizer` nunca usa el parámetro `base_year` para calcular `deferral_years`; siempre lo calculó como `period.year - min(years de las vigencias recibidas)`. El parámetro `base_year` en `EnterpriseOptimizer` solo se usa para Continuous Planning (EVM/ETC). La revisión final encontró la divergencia empíricamente: con vigencias cuyo primer año no coincide con `base_year`, los dos optimizadores daban VNT distinto para el mismo proyecto (~18% de diferencia en el caso de prueba construido). Coincidían en todo llamador y toda prueba existente solo porque, hasta ese momento, `base_year` siempre igualaba `min(vigencias)` por convención no forzada. Se corrigió `PortfolioOptimizer` para usar `min(bp.year for bp in budget_periods)` — la misma referencia real que ya usa `EnterpriseOptimizer` — en vez de `base_year`, y se agregó una prueba (`test_ambos_optimizadores_coinciden_con_base_year_desalineado`) que fuerza deliberadamente el desalineamiento y confirma que ambos optimizadores acuerdan. Commit: `dc5943f`.
+
 ---
 
 ### Task 5: Campaña de mutación
@@ -862,71 +864,117 @@ cobertura."
 **Files:**
 - Create: `<scratchpad_actual>/mutacion_capex_perfil.py` (usar el mismo directorio de scratchpad que las campañas anteriores de esta sesión, p. ej. `mutacion_anio_optimo.py`)
 
-- [ ] **Step 1: Escribir el script de mutación**
+**Nota:** esta sección se reescribió con el estado REAL ejecutado — el borrador original (8 mutaciones, `T2-A/B/C`, `T3-A/B`, `T4-A/B/C`) se escribió antes de que las Tasks 2-4 pasaran por varias rondas de corrección propia y no cubría NC-7/NC-8/NC-10 (ver `REGISTRO_ASUNTOS_ABIERTOS.md`, D-9). Quien ejecutó la campaña correctamente ignoró el borrador y diseñó las 12 mutaciones contra el código real — así es como debe hacerse; este documento solo se pone al día para no confundir a quien lo lea después.
 
-Seguir exactamente el patrón de `mutacion_anio_optimo.py` (copiar los tres archivos a una carpeta aislada, aplicar una sustitución literal verificada única, correr la suite completa, confirmar `MUERTO`). Mutaciones a incluir, cada una reintroduciendo un defecto específico de este plan:
+- [x] **Step 1: Escribir el script de mutación**
+
+Seguir exactamente el patrón de `mutacion_anio_optimo.py` (copiar los tres archivos a una carpeta aislada, aplicar una sustitución literal verificada única, correr la suite completa, confirmar `MUERTO`). Las 12 mutaciones realmente usadas, cada una reintroduciendo un defecto específico de NC-4 a NC-10 (D-9 del registro):
 
 ```python
 MUT = [
- ("T2-A", "capex_by_year deja de leerse — vuelve al escalar aunque exista perfil",
-  "        if project.costs.capex_by_year:",
-  "        if False and project.costs.capex_by_year:"),
+ # ── Task 1: declared_execution_year ──────────────────────────────────────
+ ("AUT1", "declared_execution_year ya no se autocompleta en __post_init__",
+  "    def __post_init__(self):\n"
+  "        if self.declared_execution_year == 0:\n"
+  "            self.declared_execution_year = self.execution_year",
+  "    def __post_init__(self):\n"
+  "        pass"),
 
- ("T2-B", "El tramo deja de sumar deferral_years — vuelve al defecto original (31% de más)",
-  "                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))",
-  "                year: monto / ((1.0 + self.wacc) ** (year - declared))"),
+ # ── Task 2: fórmula de valoración de capex_by_year (NC-4/NC-5) ───────────
+ ("FORM1", "El defecto original reintroducido: delta=execution_year-declared en vez de deferral_years",
+  "            capex_pv_por_tramo = {\n"
+  "                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))\n"
+  "                for year, monto in project.costs.capex_by_year.items()\n"
+  "            }",
+  "            capex_pv_por_tramo = {\n"
+  "                year: monto / ((1.0 + self.wacc) ** ((year - declared) + (project.execution_year - declared)))\n"
+  "                for year, monto in project.costs.capex_by_year.items()\n"
+  "            }"),
 
- ("T2-C", "declared_execution_year deja de usarse — se reemplaza por execution_year directo",
-  "            declared = project.declared_execution_year or project.execution_year",
-  "            declared = project.execution_year"),
+ ("FORM2", "El ancla 'declared' usa execution_year en vez de declared_execution_year",
+  "declared = project.declared_execution_year or project.execution_year",
+  "declared = project.execution_year"),
 
- ("T3-A", "R1 Enterprise deja de reanclar — vuelve a buscar el año calendario literal",
+ # ── Task 3: EnterpriseOptimizer (NC-6/NC-7/NC-8) ─────────────────────────
+ ("ENT-R1-ANCHOR", "R1 deja de reanclar el perfil al candidato s (vuelve a buscar el año literal)",
   "                        delta = years[s] - declared",
   "                        delta = 0"),
 
- ("T3-B", "R1 Enterprise vuelve a mezclar ramas dentro de la ventana",
-  "                        coef = sum(\n"
-  "                            monto for year_k, monto in cap_by_year.items()\n"
-  "                            if year_k + delta == years[t]\n"
-  "                        )",
-  "                        coef = (sum(\n"
-  "                            monto for year_k, monto in cap_by_year.items()\n"
-  "                            if year_k + delta == years[t]\n"
-  "                        ) or proj.costs.capex_COP / cy)"),
+ ("ENT-R1-MIX", "R1 vuelve a mezclar ramas: un año sin tramo declarado dentro de la ventana cae al reparto uniforme",
+  "                    else:\n"
+  "                        t_rel = t - s\n"
+  "                        coef = proj.costs.capex_COP / cy if 0 <= t_rel < cy else 0.0\n"
+  "                    if coef > 0:\n"
+  "                        expr.append(coef * x[i][s])",
+  "                    else:\n"
+  "                        t_rel = t - s\n"
+  "                        coef = proj.costs.capex_COP / cy if 0 <= t_rel < cy else 0.0\n"
+  "                    if coef <= 0 and cap_by_year:\n"
+  "                        t_rel = t - s\n"
+  "                        if 0 <= t_rel < cy:\n"
+  "                            coef = proj.costs.capex_COP / cy\n"
+  "                    if coef > 0:\n"
+  "                        expr.append(coef * x[i][s])"),
 
- ("T4-A", "PortfolioOptimizer vuelve a anclar en declared en vez de en 0",
-  "                    k = year - declared",
-  "                    k = year - declared + declared"),
+ ("ENT-CM-SUM", "capex_matrix (budget_utilization) vuelve a contar solo el tramo declarado, no el total del perfil",
+  "capex_matrix[i][t] = sum(cap_by_year.values())",
+  "capex_matrix[i][t] = cap_by_year.get(declared, 0.0)"),
 
- ("T4-B", "PortfolioOptimizer: camino uniforme deja de usar ventana relativa",
-  "                for k in range(min(cy, n_years)):",
-  "                for k in range(min(cy, n_years) + 1):"),
+ ("ENT-R12-SUM", "R12 (TOTEX) vuelve a contar solo el tramo declarado, no el total del perfil",
+  "capex_this = sum(cap_by_year.values())",
+  "capex_this = cap_by_year.get(declared, 0.0)"),
 
- ("T4-C", "PortfolioOptimizer deja de calcular deferral_years — vuelve a evaluar siempre con 0",
-  "                deferral = max(0, bp.year - base_year)",
-  "                deferral = 0"),
+ ("ENT-SEL-CAPEX", "selected[] (Enterprise) vuelve a reportar el escalar capex_COP (0) en vez del total del perfil",
+  "cap_total = sum(_cap_by_year_rep.values()) if _cap_by_year_rep else proj.costs.capex_COP",
+  "cap_total = proj.costs.capex_COP"),
+
+ # ── Task 4: PortfolioOptimizer (NC-9/NC-10) ──────────────────────────────
+ ("PORT-CM-PROFILE", "capex_matrix (Portfolio, rama capex_by_year) vuelve a indexar por año calendario literal, no relativo",
+  "                for year, monto in capex_by_year.items():\n"
+  "                    k = year - declared\n"
+  "                    if 0 <= k < n_years:\n"
+  "                        capex_matrix[i, k] += monto",
+  "                for year, monto in capex_by_year.items():\n"
+  "                    k = year_map.get(year, -1)\n"
+  "                    if 0 <= k < n_years:\n"
+  "                        capex_matrix[i, k] += monto"),
+
+ ("PORT-CM-UNIFORM", "capex_matrix (Portfolio, rama uniforme) vuelve a anclarse al índice del execution_year declarado, no a 0",
+  "                for k in range(min(cy, n_years)):\n"
+  "                    capex_matrix[i, k] = capex_arr[i] / cy",
+  "                start_t = year_map.get(proj.execution_year, 0)\n"
+  "                for t in range(n_years):\n"
+  "                    if start_t <= t < start_t + cy:\n"
+  "                        capex_matrix[i, t] = capex_arr[i] / cy"),
+
+ ("PORT-DEFERRAL", "PortfolioOptimizer deja de calcular y pasar deferral_years en el escaneo de VNT",
+  "                deferral = max(0, bp.year - _plan_base_year)\n"
+  "                r = self.engine.evaluate(proj, deferral_years=deferral)",
+  "                r = self.engine.evaluate(proj)"),
+
+ ("PORT-SEL-CAPEXARR", "capex_arr[i] (Portfolio) ya no se reasigna al total del perfil → selected reporta capex_COP=0",
+  "                capex_arr[i] = sum(capex_by_year.values())",
+  "                pass"),
 ]
 ```
 
-(Nota para quien ejecute: `T4-B` es un ejemplo de mutación de límite — confirmar antes de correrla que produce exactamente una coincidencia de texto en el archivo copiado; si el conteo de ocurrencias no es 1, ajustar el fragmento para que sea único, siguiendo el mismo criterio que las siete campañas anteriores.)
+(`PORT-CM-UNIFORM` y `PORT-DEFERRAL` reflejan el código tras el arreglo de `base_year` vs. `min(vigencias)` hallado en la revisión final — ver la nota al final de la Task 4. Si se ejecuta esta campaña contra un estado del código anterior a ese arreglo, ajustar `PORT-DEFERRAL` para usar `base_year` en vez de `_plan_base_year`, verificando primero que el fragmento sea único con `count() == 1`, igual que las siete campañas anteriores.)
 
-- [ ] **Step 2: Correr la campaña**
+- [x] **Step 2: Correr la campaña**
 
 Run: `python <ruta_scratchpad>/mutacion_capex_perfil.py`
-Expected: `MUERTOS 8/8`. Si algo `SOBREVIVE`, no continuar a la Task 6 — volver a las pruebas de las Tasks 2-4, identificar por qué esa prueba no distingue el comportamiento correcto del mutado (probablemente está verificando un campo reportado en vez de reconstruir el valor con un oráculo independiente — la misma lección de S30), corregir la prueba, y volver a correr la campaña completa hasta `MUERTOS 8/8`.
 
-- [ ] **Step 3: Commit**
+**Resultado real:** primera corrida, **10/12 muertos, 2 sobrevivientes** (`ENT-R1-MIX`, `PORT-CM-UNIFORM`) — el mismo patrón de siempre: la prueba existente medía un campo reportado por un camino de código distinto al que la mutación realmente rompía (`budget_utilization`/`capex_matrix` en vez de la restricción R1 misma; el VNT dejaba que la economía del proyecto eligiera el año, sin aislar el defecto de anclaje). Se agregaron `test_enterprise_r1_no_mezcla_ramas_bajo_presion_de_presupuesto` y `test_portfolio_uniforme_no_ancla_al_indice_del_declarado`, cada una forzando presupuesto cero salvo en el escenario que solo es factible bajo el comportamiento correcto. Segunda corrida (completa, desde cero): **12/12 muertos.**
 
-```bash
-git add test_suite_epm_full.py
-git commit -m "test: campaña de mutación confirma 8/8 para el perfil de CAPEX por año
+- [x] **Step 3: Commit**
 
-mutacion_capex_perfil.py queda documentada en el registro de asuntos
-abiertos, no en el repositorio (vive en el scratchpad de la sesión, como
-las siete campañas anteriores)."
+```
+fe0e09a  test: campaña de mutación confirma N/N para el perfil de CAPEX por año
 ```
 
-(Si el Step 2 obligó a corregir alguna prueba, ese cambio va en este mismo commit.)
+(El asunto del subject line — quedó literalmente `N/N` en vez de `12/12`, un placeholder sin llenar — se documenta como hallazgo cosmético de la revisión final; el cuerpo del commit sí tiene el detalle correcto. No se corrigió con `commit --amend` porque hay commits posteriores encima y este entorno no soporta rebase interactivo.)
+
+Además, la revisión de la propia campaña encontró un hueco adicional (no una mutación fallida, un mutante que nunca se diseñó): `r["capex_COP"]` **nominal** (no el valor presente) de la rama `capex_by_year` no tenía ninguna prueba dedicada — todas las pruebas de S31 verificaban `capex_pv_COP`. Se agregó `test_capex_cop_nominal_es_la_suma_del_perfil`, verificada manualmente contra una reversión de esa línea. Commit `d832e61`.
 
 ---
 
