@@ -593,7 +593,7 @@ por (nota: la primera versión de esta corrección usó `cap_by_year.get(declare
 
 - [x] **Step 3c: Reanclar R12 (restricción TOTEX)**
 
-Hallado durante la ejecución: mismo defecto en una restricción real del MILP (no solo reportería) — busca por el comentario `# ── R12: TOTEX por vigencia`. Reemplazar:
+Hallado durante la ejecución: mismo defecto en una restricción real del MILP (no solo reportería) — busca por el comentario `# ── R12: TOTEX por vigencia`. Pasó por dos correcciones, igual que `capex_matrix` (Step 3b) — primero se reancló al candidato con `get(declared, 0.0)` (solo el tramo del año declarado), y una revisión de calidad posterior encontró que eso subestima un perfil de varios tramos frente al techo TOTEX. Reemplazar directamente (versión original → versión final):
 
 ```python
                 for i, proj in enumerate(projects):
@@ -623,24 +623,27 @@ por:
                         capex_this = proj.costs.capex_COP / cy
 ```
 
+Prueba adicional agregada en la corrección final, `test_enterprise_r12_totex_cuenta_todos_los_tramos`: un proyecto de dos tramos (4.000M + 4.000M = 8.000M) contra un techo TOTEX de 5.000M — debe rechazarse. Con `get(declared, 0.0)` solo contaba el primer tramo (4.000M), colándose bajo el techo; con `sum(...)` cuenta los 8.000M reales y lo rechaza correctamente.
+
 - [x] **Step 4: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 11 pruebas.
+Expected: `OK` con 12 pruebas.
 
 - [x] **Step 5: Correr toda la suite**
 
 Run: `python test_suite_epm_full.py`
-Expected: `OK` — 243 pruebas. El camino uniforme no cambió su lógica en ninguno de los tres puntos, solo se reescribió sin alterar el resultado para proyectos sin `capex_by_year`.
+Expected: `OK` — 244 pruebas. El camino uniforme no cambió su lógica en ninguno de los tres puntos, solo se reescribió sin alterar el resultado para proyectos sin `capex_by_year`.
 
 - [x] **Step 6: Commits**
 
-Tres commits documentan el historial completo de esta Task (no se aplanaron en uno solo, para que el porqué de cada corrección quede trazable):
+Cuatro commits documentan el historial completo de esta Task (no se aplanaron en uno solo, para que el porqué de cada corrección quede trazable):
 
 ```
 1ebb968  fix: R1 (EnterpriseOptimizer) reancla capex_by_year y no mezcla ramas
-76a272d  fix: reanclar capex_by_year en R12 y en el reporte de utilización
+76a272d  fix: reanclar capex_by_year en R12 y en el reporte de utilización (get(declared) — primera versión, subestimaba perfiles multi-tramo)
 094dd8b  fix: capex_matrix reporta el total del perfil, no solo el tramo declarado
+9a16d72  fix: R12 cuenta el total del perfil, no solo el primer tramo (misma corrección que 094dd8b, aplicada a R12)
 ```
 
 **Hallazgo registrado, no corregido en esta Task:** un proyecto obligatorio de valor neto negativo (que el MILP debe ejecutar igual) tiene incentivo a diferirse hasta el último período visible de cualquier horizonte finito, porque ahí un tramo de construcción de varios años cae fuera de la ventana y no consume presupuesto — el mismo comportamiento intencional de la sección 5, pero explotado por el objetivo de minimización de costo. Se verificó que esto **ya existía antes de este plan**, incluso para CAPEX legado sin perfil explícito — no lo introdujo esta Task. Corregirlo de fondo exige una decisión de diseño (acotar qué candidatos son válidos según si su ventana de construcción cabe completa en el horizonte, o documentar el límite explícitamente) — queda como asunto abierto nuevo para el registro, no como parte de este plan.
