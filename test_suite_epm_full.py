@@ -4146,6 +4146,41 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "deferral_years real en su bucle interno.",
         )
 
+    def test_portfolio_simple_selected_reporta_capex_real_del_perfil(self):
+        """selected['capex_COP'] y ['vei'] deben reflejar el total real del
+        perfil, no el escalar capex_COP=0 que declaran los proyectos de
+        perfil explícito — de lo contrario el reporte impreso muestra CAPEX
+        y VEI en cero para un proyecto que el motor sí contabilizó bien."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P933", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [BudgetPeriod(year=y, budget_COP=5_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next(s for s in result.selected if s["project_id"] == "P933")
+        self.assertAlmostEqual(seleccionado["capex_COP"], 5_000_000_000, delta=1.0)
+        # Oráculo independiente: VEI = VNT / CAPEX real (5.000M), no VNT/0.
+        vei_esperado = seleccionado["net_value_COP"] / 5_000_000_000
+        self.assertAlmostEqual(seleccionado["vei"], vei_esperado, delta=1e-6)
+
+    def test_enterprise_selected_reporta_capex_real_del_perfil(self):
+        """Mismo caso que el anterior, para EnterpriseOptimizer."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P934", capex=0, exec_year=2026,
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [ResourcePeriod(year=y, budget_COP=5_000_000_000) for y in (2026, 2027)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next(s for s in result.selected if s["project_id"] == "P934")
+        self.assertAlmostEqual(seleccionado["capex_COP"], 5_000_000_000, delta=1.0)
+        # Oráculo independiente: VEI = VNT / CAPEX real (5.000M), no VNT/0.
+        vei_esperado = seleccionado["net_value_COP"] / 5_000_000_000
+        self.assertAlmostEqual(seleccionado["vei"], vei_esperado, delta=1e-6)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────

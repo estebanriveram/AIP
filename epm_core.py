@@ -5579,6 +5579,13 @@ class PortfolioOptimizer:
             capex_by_year = getattr(proj.costs, 'capex_by_year', {})
             declared = proj.declared_execution_year or proj.execution_year
             if capex_by_year:
+                # capex_arr[i] pasa a ser el total real del perfil — de lo
+                # contrario "selected" reporta capex_COP=0 (el escalar sin
+                # usar) para un proyecto de perfil explícito, aunque el
+                # motor sí lo haya contabilizado bien internamente. No
+                # afecta la rama uniforme (else, abajo): esta reasignación
+                # solo corre cuando capex_by_year existe.
+                capex_arr[i] = sum(capex_by_year.values())
                 for year, monto in capex_by_year.items():
                     k = year - declared
                     if 0 <= k < n_years:
@@ -7582,7 +7589,13 @@ class EnterpriseOptimizer:
                     val = pulp.value(x[i][t])
                     if val is not None and val > 0.5:
                         nv = vnt[i][t]
-                        cap_total = proj.costs.capex_COP
+                        # Total real: si hay perfil explícito, capex_COP es
+                        # el escalar sin usar (0 típicamente) — reportar ese
+                        # valor en vez del total del perfil deja "selected"
+                        # con capex_COP=0 para un proyecto que el motor sí
+                        # contabilizó bien internamente.
+                        _cap_by_year_rep = getattr(proj.costs, 'capex_by_year', {}) or {}
+                        cap_total = sum(_cap_by_year_rep.values()) if _cap_by_year_rep else proj.costs.capex_COP
                         # Info de precedencia para el reporte
                         prec_id = getattr(proj, "precedent_project_id", "")
                         lag_yr  = getattr(proj, "min_lag_years", 0)
