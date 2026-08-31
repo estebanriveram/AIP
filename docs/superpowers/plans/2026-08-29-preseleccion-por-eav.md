@@ -20,7 +20,9 @@
 - Modify: `epm_core.py` (nueva función a nivel de módulo, inmediatamente antes de `class PortfolioOptimizer:`, línea 5459)
 - Test: `test_suite_epm_full.py` (nueva clase `S32_PreseleccionPorEAV`, agregar al final del archivo antes de `S31_PerfilCapexPorAnio` o después — el orden entre S31 y S32 no importa; mantener numeración secuencial)
 
-- [ ] **Step 1: Escribir las pruebas que fallan**
+- [x] **Step 1: Escribir las pruebas que fallan (versión corregida — ver nota)**
+
+**Nota:** el borrador original de `test_preseleccion_elige_mayor_eav_no_mayor_vnt` (capex/delta_annual sin `asset_type` en ninguna alternativa) era matemáticamente irrealizable — sin `asset_type`, `get_horizon_for_asset()` cae al mismo `TyD._default=30` para ambas, y con horizonte idéntico `EAV = VNT / mismo_factor_de_anualidad`: una transformación monótona que nunca puede invertir el orden de VNT. Hallado por el subagente implementador durante el Task 1, confirmado independientemente por dos revisiones (spec y calidad), ambas recalculando el escenario a mano contra el motor real. Versión corregida abajo — declara `asset_type` real y distinto para cada alternativa (activos TyD con vidas útiles muy distintas) y recalibra los beneficios anuales para que la separación sea genuina, no un simple reescalado proporcional (que tampoco bastaría, por la misma razón de monotonicidad).
 
 ```python
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,19 +40,36 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
     def test_preseleccion_elige_mayor_eav_no_mayor_vnt(self):
         """Prueba decisiva: una alternativa de vida larga con VNT crudo mayor
         pierde frente a una de vida corta con EAV mayor. Esta prueba debe
-        fallar si _preselect_by_eav no existe o si usa net_value_COP."""
-        sc_grande = _make_sc("VD-1-A", delta=100_000.0, price=335_000)
+        fallar si _preselect_by_eav no existe o si usa net_value_COP.
+
+        get_horizon_for_asset() resuelve el horizonte por asset_type (con
+        fallback a TyD._default=30 si no se declara). Sin asset_type
+        explícito, ambas alternativas caerían en ese mismo fallback: con
+        horizonte idéntico, EAV = VNT / mismo_factor_de_anualidad para las
+        dos, así que EAV nunca podría invertir el orden de VNT — el caso no
+        discriminaría nada de lo que dice probar. Por eso aquí se declara
+        asset_type distinto para cada una (activos reales de TyD, con vidas
+        útiles muy distintas: 30a vs 10a), y el CAPEX/beneficio anual de
+        cada una se calibra para que la ganadora por VNT crudo (larga,
+        pago lento: bajo beneficio anual frente a su CAPEX) y la ganadora
+        por EAV (corta, pago rápido: beneficio anual casi igual a su CAPEX)
+        efectivamente se separen — un simple reescalado proporcional de
+        ambas alternativas no basta, EAV es monótono con VNT cuando el
+        horizonte coincide."""
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
         larga = _make_project(
             pid="ALT_LARGA", capex=50_000_000_000, exec_year=2026,
             drivers=[_make_driver("VD-1", [sc_grande])],
             exclusion_group_id="NECESIDAD_X",
         )
-        sc_chica = _make_sc("VD-1-A", delta=15_000.0, price=335_000)
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ALT_CORTA", capex=8_000_000_000, exec_year=2026,
             drivers=[_make_driver("VD-1", [sc_chica])],
             exclusion_group_id="NECESIDAD_X",
         )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
         # Confirmar la premisa del caso antes de probar la función: la larga
         # debe tener mayor VNT crudo Y menor EAV que la corta — si el config
         # cambia y esto deja de cumplirse, la prueba debe fallar aquí, no en
