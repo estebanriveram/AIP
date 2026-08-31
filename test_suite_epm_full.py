@@ -48,6 +48,7 @@ from epm_core import (
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
     PortfolioOptimizer, BudgetPeriod,
+    _preselect_by_eav,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
     EVMEngine, OutageCalendar, WorkflowEngine,
     PlanVersionStore,
@@ -4304,6 +4305,107 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "anclando al índice del execution_year declarado en vez de "
             "reportar el costo relativo a CUALQUIER candidato.",
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S32 — PRESELECCIÓN DE ALTERNATIVAS POR VALOR ANUAL EQUIVALENTE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class S32_PreseleccionPorEAV(unittest.TestCase):
+    """Dentro de un exclusion_group_id, gana la alternativa de mayor EAV,
+    no la de mayor VNT crudo — salvo que una sea no-discrecional."""
+
+    def setUp(self):
+        self.cfg = _cfg()
+        self.engine = ValueEngine(self.cfg)
+
+    def test_preseleccion_elige_mayor_eav_no_mayor_vnt(self):
+        """Prueba decisiva: una alternativa de vida larga con VNT crudo mayor
+        pierde frente a una de vida corta con EAV mayor. Esta prueba debe
+        fallar si _preselect_by_eav no existe o si usa net_value_COP.
+
+        get_horizon_for_asset() resuelve el horizonte por asset_type (con
+        fallback a TyD._default=30 si no se declara). Sin asset_type
+        explícito, ambas alternativas caerían en ese mismo fallback: con
+        horizonte idéntico, EAV = VNT / mismo_factor_de_anualidad para las
+        dos, así que EAV nunca podría invertir el orden de VNT — el caso no
+        discriminaría nada de lo que dice probar. Por eso aquí se declara
+        asset_type distinto para cada una (activos reales de TyD, con vidas
+        útiles muy distintas: 30a vs 10a), y el CAPEX/beneficio anual de
+        cada una se calibra para que la ganadora por VNT crudo (larga,
+        pago lento: bajo beneficio anual frente a su CAPEX) y la ganadora
+        por EAV (corta, pago rápido: beneficio anual casi igual a su CAPEX)
+        efectivamente se separen — un simple reescalado proporcional de
+        ambas alternativas no basta, EAV es monótono con VNT cuando el
+        horizonte coincide."""
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="ALT_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_X",
+        )
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="ALT_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_X",
+        )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        # Confirmar la premisa del caso antes de probar la función: la larga
+        # debe tener mayor VNT crudo Y menor EAV que la corta — si el config
+        # cambia y esto deja de cumplirse, la prueba debe fallar aquí, no en
+        # un assertEqual confuso más abajo.
+        r_larga = self.engine.evaluate(larga)
+        r_corta = self.engine.evaluate(corta)
+        self.assertGreater(r_larga["net_value_COP"], r_corta["net_value_COP"],
+                            "Premisa del caso: la larga debe ganar por VNT crudo")
+        self.assertGreater(r_corta["eav_COP"], r_larga["eav_COP"],
+                            "Premisa del caso: la corta debe ganar por EAV")
+
+        ganadores, descartados = _preselect_by_eav([larga, corta], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_CORTA"})
+        self.assertEqual(len(descartados), 1)
+        self.assertEqual(descartados[0][0].id, "ALT_LARGA")
+        self.assertEqual(descartados[0][1].id, "ALT_CORTA")
+
+    def test_preseleccion_respeta_obligatoria_aunque_tenga_menor_eav(self):
+        """Lo no-discrecional pesa más que el EAV."""
+        obligatoria = _make_project(
+            pid="ALT_OBLIGATORIA", capex=50_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_Y", is_mandatory=True,
+        )
+        mejor_eav = _make_project(
+            pid="ALT_MEJOR_EAV", capex=8_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_Y",
+        )
+        ganadores, descartados = _preselect_by_eav([obligatoria, mejor_eav], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_OBLIGATORIA"})
+
+    def test_preseleccion_dos_obligatorias_falla(self):
+        """Dos alternativas no-discrecionales en el mismo grupo son un error
+        de captura, no un caso a resolver en silencio — mismo criterio que
+        ya existe hoy en la restricción R3d de ambos optimizadores."""
+        a = _make_project(pid="A", exclusion_group_id="Z", is_mandatory=True)
+        b = _make_project(pid="B", exclusion_group_id="Z", is_mandatory=True)
+        with self.assertRaises(ValueError):
+            _preselect_by_eav([a, b], self.engine)
+
+    def test_preseleccion_no_toca_proyectos_sin_grupo(self):
+        p1 = _make_project(pid="SIN_GRUPO_1")
+        p2 = _make_project(pid="SIN_GRUPO_2")
+        ganadores, descartados = _preselect_by_eav([p1, p2], self.engine)
+        self.assertEqual({p.id for p in ganadores}, {"SIN_GRUPO_1", "SIN_GRUPO_2"})
+        self.assertEqual(descartados, [])
+
+    def test_preseleccion_grupo_de_un_solo_elemento_no_se_descarta(self):
+        p = _make_project(pid="UNICA", exclusion_group_id="SOLO_UNA")
+        ganadores, descartados = _preselect_by_eav([p], self.engine)
+        self.assertEqual({p.id for p in ganadores}, {"UNICA"})
+        self.assertEqual(descartados, [])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
