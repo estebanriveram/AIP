@@ -2253,6 +2253,21 @@ class ProjectInput:
       - Rehabilitación de unidad de generación (parada mayor)
     """
 
+    declared_execution_year: int = 0
+    """Año de ejecución tal como fue declarado originalmente — antes de que
+    cualquier escaneo del MILP o del año óptimo pruebe un año candidato
+    distinto sobrescribiendo execution_year. Se captura una sola vez en
+    __post_init__ si no se declara explícitamente. Es el ancla contra la que
+    se mide el offset de cada tramo de costs.capex_by_year: sin este campo,
+    un perfil de CAPEX explícito no puede reanclarse cuando el motor prueba
+    un año de arranque distinto — se queda buscando literalmente los años
+    calendario originales y el escaneo lo ve como si casi no costara nada
+    en cualquier otro año."""
+
+    def __post_init__(self):
+        if self.declared_execution_year == 0:
+            self.declared_execution_year = self.execution_year
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECCIÓN B2: EARNED VALUE MANAGEMENT (Continuous Planning)

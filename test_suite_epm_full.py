@@ -85,6 +85,7 @@ def _make_project(
     precedent_id="", min_lag=0,
     mutual_exclusion_ids=None, exclusion_group_id=None,
     require_outage_alignment=False,
+    capex_by_year=None, declared_execution_year=0,
 ) -> ProjectInput:
     if drivers is None:
         drivers = [_make_driver("VD-1", [_make_sc("VD-1-A", delta=100.0)])]
@@ -92,7 +93,8 @@ def _make_project(
         id=pid, name=name or pid,
         business_unit=bu,
         investment_type=inv_type,
-        costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex_incremental),
+        costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex_incremental,
+                        capex_by_year=capex_by_year or {}),
         execution_year=exec_year,
         optimal_year=exec_year,
         drivers=drivers,
@@ -101,6 +103,7 @@ def _make_project(
         is_committed=is_committed,
         committed_year=committed_year,
         construction_years=construction_years,
+        declared_execution_year=declared_execution_year,
     )
     p.asset_id = asset_id
     p.precedent_project_id = precedent_id
@@ -3793,6 +3796,55 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
             msg=(f"razon obtenida {dr2/dr0:.6f}; se esperaba {esperado:.6f} "
                  f"(descuento aplicado una vez). Si se parece a {duplicado:.6f}, "
                  f"el rezago de obra se esta cobrando dos veces."))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S31 — PERFIL DE CAPEX POR AÑO (costs.capex_by_year)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class S31_PerfilCapexPorAnio(unittest.TestCase):
+    """CAPEX declarado por año calendario (costs.capex_by_year), valorado y
+    reanclado correctamente cuando el motor prueba un año de arranque
+    distinto al originalmente declarado."""
+
+    def setUp(self):
+        self.cfg = _cfg()
+        self.engine = ValueEngine(self.cfg)
+
+    def test_declared_execution_year_se_autocompleta(self):
+        """Sin declararlo explícitamente, toma el valor de execution_year."""
+        p = ProjectInput(
+            id="P900", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2029,
+        )
+        self.assertEqual(p.declared_execution_year, 2029)
+
+    def test_declared_execution_year_explicito_se_respeta(self):
+        """Si se declara explícitamente, no se sobrescribe con execution_year."""
+        p = ProjectInput(
+            id="P901", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2029,
+            declared_execution_year=2027,
+        )
+        self.assertEqual(p.declared_execution_year, 2027)
+
+    def test_declared_execution_year_sobrevive_reasignacion_posterior(self):
+        """Si algo reasigna execution_year DESPUÉS de construir el objeto (lo
+        que hacen ambos optimizadores MILP al escanear años candidatos),
+        declared_execution_year no debe moverse — es la garantía sobre la
+        que se apoyan todas las pruebas de reanclaje de este grupo."""
+        p = ProjectInput(
+            id="P902", name="Test", business_unit="TyD",
+            investment_type="Reposicion de Activos",
+            costs=CostInput(capex_COP=1_000_000_000),
+            execution_year=2028,
+        )
+        p.execution_year = 2026  # simula lo que hace un bucle de escaneo MILP
+        self.assertEqual(p.declared_execution_year, 2028)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
