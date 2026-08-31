@@ -223,7 +223,7 @@ puede retirarse.
 
 ## C · Cobertura incompleta
 
-### C-1 · El CAPEX entra a la ecuación de valor como un escalar
+### C-1 · El CAPEX entra a la ecuación de valor como un escalar — CERRADO para granularidad anual
 
 `CostInput.capex_by_year` existe y alimenta las restricciones de presupuesto del
 optimizador, pero **la ecuación de valor no lo usa**. Un proyecto que desembolsa
@@ -232,6 +232,13 @@ en tres años se valora igual que uno que desembolsa todo el primer día.
 **Choca con el FR23 del documento**, que exige cronogramas de desembolso por mes
 y por año. La solución construida debe cerrar esta brecha; el motor de
 referencia no la cubre.
+
+**Cerrado en la rama `feature/perfil-capex-por-anio` (pendiente de mergear) —
+ver D-9.** `evaluate()` ya valora `capex_by_year` correctamente, y ambos
+optimizadores MILP lo consumen y reportan de forma consistente. **Sigue sin
+cubrir la granularidad mensual** que también pide el FR23 — `capex_by_year`
+solo admite año calendario, no mes. Si el proveedor necesita cronogramas
+mensuales, esa es una extensión aparte, no cubierta por este cierre.
 
 ### C-2 · El motor nunca ha corrido a volumetría de producción
 
@@ -538,6 +545,143 @@ a 221 pruebas (+57).
 
 ---
 
+### D-9 · Perfil de CAPEX por año — cierra C-1, siete defectos corregidos, dos abiertos
+
+Origen distinto al de D-8: no se encontró verificando contra la documentación
+de Copperleaf, sino al diseñar cómo comparar alternativas de horizontes
+distintos (pregunta de usuarios en calibración) y descubrir que
+`CostInput.capex_by_year` **ya existía**, con una tubería de importación real
+desde Excel/PEGA/SAP (`epm_core.py` — el importador de portafolios), pero que
+la ecuación de valor lo ignoraba por completo — el asunto C-1 de este mismo
+registro. Diseño completo en
+`docs/superpowers/plans/2026-08-29-perfil-capex-por-anio.md` y el spec que lo
+precede.
+
+**Patrón común a todos los defectos cerrados aquí:** un proyecto con perfil de
+CAPEX explícito no se reanclaba cuando el motor probaba un año de arranque
+distinto al declarado — se quedaba buscando literalmente los años calendario
+originales, y cualquier candidato distinto lo veía como si costara cero o casi
+cero. El campo nuevo `ProjectInput.declared_execution_year` (capturado una
+sola vez al construir el proyecto, inmune a reasignaciones posteriores de
+`execution_year`) es el ancla que permite reanclar.
+
+#### NC-4 · `evaluate()` nunca leía `capex_by_year` — CERRADO
+
+Cualquier proyecto importado con CAPEX repartido en varios años calendario
+tenía su VNT calculado como si todo se pagara de una sola vez. Cero cobertura
+de pruebas sobre el campo antes de este trabajo.
+
+#### NC-5 · La fórmula de valoración usaba el año de ejecución en vez del rezago compartido — CERRADO
+
+La primera versión de la corrección usaba `delta = execution_year −
+declared_execution_year` como desplazamiento temporal. El optimizador de
+alcance empresarial reasigna `execution_year` al candidato **y además** pasa
+su propio `deferral_years` (relativo al año base del plan, la referencia que
+ya comparten los otros tres componentes de la ecuación) — dos referencias
+que solo coinciden por casualidad.
+
+| Proyecto declarado en 2029, candidato = año base del plan (`deferral_years=0`) | Valor |
+|---|---|
+| Nominal (correcto: sin diferir, sin descontar) | 1.000.000.000 |
+| Fórmula con `delta` (primera versión) | 1.312.932.375 |
+| **Sobrecosto imputado** | **+31,3 %** |
+
+El mismo patrón — y casi el mismo porcentaje — que NC-1 de D-8. Se corrigió a
+`offset + deferral_years`, igual que el CAPEX legado.
+
+#### NC-6 · R1 (presupuesto, optimizador de alcance empresarial) no reanclaba y mezclaba ramas — CERRADO
+
+Dos defectos en la misma restricción: (1) el perfil explícito solo "existía"
+en los años calendario literales declarados, sin importar qué candidato
+probaba el MILP; (2) un año de la ventana de construcción sin tramo declarado
+caía al reparto uniforme del CAPEX total, cobrando presupuesto dos veces
+cuando el perfil era parcial.
+
+#### NC-7 · La matriz que alimenta el reporte de utilización de presupuesto no reanclaba — CERRADO
+
+No afectaba ninguna decisión del MILP (R1 ya decidía bien de forma
+independiente), pero el reporte mostraba 0% de utilización para un proyecto
+de perfil explícito en cualquier candidato no-literal. Primera corrección
+solo devolvía el tramo del año declarado (subestimaba un perfil de varios
+tramos); corregido a la suma completa del perfil.
+
+#### NC-8 · R12 (restricción TOTEX) no reanclaba y solo contaba el primer tramo — CERRADO
+
+A diferencia de NC-7, esta sí es una restricción real del MILP: un proyecto de
+dos tramos (4.000 MM + 4.000 MM) contaba solo 4.000 MM contra un techo TOTEX,
+colándose bajo un límite que en realidad debía superar.
+
+#### NC-9 · `PortfolioOptimizer` (optimizador simple) sin ninguna prueba, con el mismo anclaje roto — CERRADO
+
+Este optimizador no tenía **ninguna** prueba en la suite antes de este
+trabajo. Su matriz de CAPEX anclaba en el índice del `execution_year`
+declarado en vez de en cero, afectando también al CAPEX legado (sin perfil).
+Y su bucle de escaneo nunca pasaba `deferral_years` — verificado
+empíricamente: el VNT del mismo proyecto evaluado en años candidatos
+distintos variaba ~0,1-0,2% por año, no un descuento económico real. El
+escaneo de año óptimo de este optimizador era económicamente casi inerte,
+independiente de todo lo relacionado con `capex_by_year`.
+
+#### NC-10 · `selected["capex_COP"]`/`"vei"` reportaban el escalar sin usar — CERRADO
+
+En **ambos** optimizadores: un proyecto de perfil explícito suele dejar el
+campo escalar `capex_COP` en 0, así que el reporte impreso
+(`print_portfolio_report`) mostraba CAPEX y VEI en cero para un proyecto que
+el motor sí contabilizó y presupuestó bien internamente.
+
+> **Nota de método.** Cada uno de NC-6 a NC-10 se encontró **durante la
+> ejecución** de la tarea que corregía el anterior — no estaban en el diseño
+> original. El patrón se repitió cinco veces: la revisión de calidad
+> independiente (dos etapas, spec y calidad, subagente distinto en cada una)
+> encontraba una instancia adicional del mismo defecto en otro punto del
+> archivo, o una prueba que pasaba por una razón ajena al arreglo que decía
+> vigilar — la misma lección de NC-1 en D-8 (probar la etiqueta, no el
+> comportamiento), repetida en NC-7/NC-9/NC-10 con exactamente esa forma. En
+> dos de esos casos (NC-6→NC-7/NC-8, NC-9→NC-10) el usuario decidió
+> explícitamente ampliar el alcance de la tarea en curso en vez de diferirlo;
+> el registro de decisiones completo queda en el historial de commits de la
+> rama.
+
+**Vigilado por el grupo S31**, con campaña de mutación dedicada: 12
+mutaciones cubriendo NC-4 a NC-10, más una prueba adicional para el `capex_COP`
+nominal (hallazgo de la revisión de la propia campaña). Primera corrida:
+10/12 muertos, 2 sobrevivientes — ambos por la misma causa de siempre (una
+prueba medía un campo reportado por un camino de código distinto al que la
+mutación realmente rompía). Corregido: **12/12 mueren.** Suite: 232 → 252
+pruebas (+20).
+
+#### Hallazgo abierto · Incentivo a diferir al borde del horizonte
+
+Un proyecto obligatorio de valor neto negativo (que el MILP debe ejecutar
+igual) tiene incentivo a diferirse hasta el último período visible de
+cualquier horizonte finito, porque ahí un tramo de construcción de varios
+años cae fuera de la ventana modelada y no consume presupuesto —
+comportamiento **intencional** del diseño (un tramo fuera de ventana no
+consume cupo de un plan que no alcanza a verlo), pero explotado por el
+objetivo de minimización de costo. **Ya existía antes de este trabajo**,
+incluso para CAPEX legado sin perfil explícito — no lo introdujo D-9. Mismo
+espíritu que NC-2 de D-8 (el óptimo sigue al parámetro de la ventana, no al
+activo). Corregirlo de fondo exige una decisión de diseño: acotar qué
+candidatos son válidos según si su ventana de construcción cabe completa en
+el horizonte, o documentar el límite explícitamente y dejar que el analista
+lo tenga en cuenta.
+
+#### Hallazgo abierto · Dos puntos más con el mismo patrón de NC-7/NC-8/NC-10, sin corregir
+
+Encontrados durante la revisión de calidad de NC-10, deliberadamente dejados
+fuera de ese alcance por ser de menor severidad inmediata:
+
+- El bloque de "Gasto Comprometido" (`_capex_committed`) de
+  `EnterpriseOptimizer` sigue leyendo el escalar `capex_COP` sin reanclar —
+  mismo patrón que NC-7/NC-8/NC-10, en otro punto del archivo.
+- `print_portfolio_report()` calcula "presupuesto usado por vigencia" sumando
+  `capex_COP` (ya corregido por NC-10 para que sea el total real), pero
+  atribuyéndolo **completo** al año de arranque — una aproximación
+  preexistente para cualquier proyecto multi-año, con o sin perfil explícito,
+  no una regresión de este trabajo.
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -552,7 +696,7 @@ a 221 pruebas (+57).
 | B-2 Crecimiento del OPEX | Medido: 491,7 → 942,1 MM | Abierto |
 | B-3 Dos `FD_lag` | `_calc_driver` y `_calc_risk` | Documentado |
 | B-4 Override sin tratamiento temporal | `ProjectInput.delta_r_override_COP` | Documentado · migración abierta |
-| C-1 CAPEX escalar | Choca con FR23 | Abierto |
+| C-1 CAPEX escalar | Suite, grupo S31 (12 mutantes) | **Cerrado para año** · mes (FR23) sigue abierto |
 | C-2 Escala no probada | — | Responsabilidad del proveedor |
 | C-3 Alcance del motor | — | Documentado |
 | D-1 Barrido de mutación (7 dominios) | 82/99 sobrevivientes iniciales | Diagnóstico completo |
@@ -565,6 +709,15 @@ a 221 pruebas (+57).
 | D-8 NC-1 CAPEX diferido sin descontar | Suite, grupo S30 (8 mutantes) | **Cerrado — motor corregido** |
 | D-8 NC-3 Doble rezago de obra (Weibull) | Suite, grupo S30 | **Cerrado — motor corregido** |
 | D-8 NC-2 Año óptimo de esquina | Medido: el óptimo sigue a `horizon_years` | **Abierto — decisión de diseño** |
+| D-9 NC-4 `evaluate()` no leía `capex_by_year` | Suite, grupo S31 | **Cerrado** |
+| D-9 NC-5 Fórmula con `delta` en vez de `deferral_years` | Medido: +31,3 % de sobrecosto | **Cerrado** |
+| D-9 NC-6 R1 Enterprise sin reanclar, mezcla de ramas | Suite, grupo S31 | **Cerrado** |
+| D-9 NC-7 Reporte de utilización sin reanclar | Suite, grupo S31 | **Cerrado** |
+| D-9 NC-8 R12 (TOTEX) sin reanclar | Suite, grupo S31 | **Cerrado** |
+| D-9 NC-9 `PortfolioOptimizer` sin pruebas, anclaje roto | Suite, grupo S31 (primera cobertura) | **Cerrado** |
+| D-9 NC-10 `selected.capex_COP`/`vei` con escalar sin usar | Suite, grupo S31 | **Cerrado** |
+| D-9 Incentivo a diferir al borde del horizonte | Mismo espíritu que NC-2 (D-8) | **Abierto — decisión de diseño** |
+| D-9 Gasto Comprometido y reporte por vigencia, mismo patrón | `_capex_committed`, `print_portfolio_report` | **Abierto — menor severidad** |
 
 ---
 
@@ -582,8 +735,9 @@ a 221 pruebas (+57).
 | S28 | Motor de Dependencias — ciclos, exclusión mutua, cascada de CoD | 9 | 9 |
 | S29 | Proporcionalidad y métricas — EAV, VEI, VEI_EAV, matriz de riesgo, persona-mes | 11 | 11 |
 | S30 | Año óptimo — CAPEX a valor presente, rezago de obra una sola vez, coherencia entre las dos puertas | 8 | 8 |
+| S31 | Perfil de CAPEX por año — valoración vía `deferral_years`, reanclaje bajo escaneo, R1/R12/reporte de `EnterpriseOptimizer`, matriz relativa y reporte de `PortfolioOptimizer` (primera cobertura de ese optimizador) | 12 | 12 |
 
-La disciplina es la misma en los nueve grupos: **no basta con probar que el
+La disciplina es la misma en los diez grupos: **no basta con probar que el
 código no falla, hay que reproducir el valor con un cálculo independiente**.
 Un mutante que sobrevive es un camino por el que una implementación
-equivocada aprobaría la entrega. Total: 99/99 mutantes probados mueren.
+equivocada aprobaría la entrega. Total: 111/111 mutantes probados mueren.
