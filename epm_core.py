@@ -5566,25 +5566,48 @@ class PortfolioOptimizer:
         capex_matrix = np.zeros((n_proj, n_years))
         capex_arr = np.zeros(n_proj)
 
+        # capex_matrix[i, k] es RELATIVO: cuánto gasta el proyecto i, k años
+        # después de cualquier candidato que se pruebe como arranque. La
+        # Restricción 1 (más abajo) ya asume esta semántica al desplazarla
+        # por t_rel = t-s; antes, el camino uniforme anclaba en el índice
+        # del execution_year DECLARADO en vez de en 0, desplazándola dos
+        # veces para cualquier candidato que no fuera el primer período del
+        # plan. capex_by_year tenía el mismo problema, buscando además el
+        # año calendario literal en vez de reanclarse.
         for i, proj in enumerate(projects):
             capex_arr[i] = proj.costs.capex_COP
-            # Leer distribución de CAPEX por vigencia si está disponible
             capex_by_year = getattr(proj.costs, 'capex_by_year', {})
-            for t, bp in enumerate(budget_periods):
-                if capex_by_year and bp.year in capex_by_year:
-                    # Distribución explícita definida por el analista (datos reales)
-                    capex_matrix[i, t] = capex_by_year[bp.year]
-                else:
-                    # Distribución uniforme sobre construction_years
-                    cy = max(1, proj.construction_years)
-                    start_t = year_map.get(proj.execution_year, 0)
-                    if start_t <= t < start_t + cy:
-                        capex_matrix[i, t] = capex_arr[i] / cy
-            # Evaluar VNT para cada año de inicio posible
+            declared = proj.declared_execution_year or proj.execution_year
+            if capex_by_year:
+                for year, monto in capex_by_year.items():
+                    k = year - declared
+                    if 0 <= k < n_years:
+                        capex_matrix[i, k] += monto
+            else:
+                cy = max(1, proj.construction_years)
+                for k in range(min(cy, n_years)):
+                    capex_matrix[i, k] = capex_arr[i] / cy
+            # Evaluar VNT para cada año de inicio posible.
+            #
+            # deferral_years se calcula y se pasa explícitamente — antes
+            # este bucle llamaba evaluate(proj) sin él, que por defecto usa
+            # deferral_years=0 SIEMPRE, sin importar qué candidato bp.year
+            # se esté probando. Verificado empíricamente antes de esta
+            # corrección: el VNT de un proyecto con CAPEX legado apenas
+            # variaba entre años candidatos (~0,1-0,2% por año, no un
+            # descuento económico real) — el escaneo de año óptimo de este
+            # optimizador era casi inerte. Mismo patrón que ya usa
+            # EnterpriseOptimizer (deferral = period.year - min(years)),
+            # reutilizando el base_year que optimize() ya recibe. También
+            # es lo que hace que capex_by_year se reancle aquí: bajo la
+            # fórmula corregida de la Task 2, esa rama usa deferral_years,
+            # no execution_year — sin este cambio, el perfil tampoco se
+            # movería con el candidato en este optimizador.
             for t, bp in enumerate(budget_periods):
                 original_exec = proj.execution_year
                 proj.execution_year = bp.year
-                r = self.engine.evaluate(proj)
+                deferral = max(0, bp.year - base_year)
+                r = self.engine.evaluate(proj, deferral_years=deferral)
                 net_values[i, t] = r["net_value_COP"]
                 proj.execution_year = original_exec
 

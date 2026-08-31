@@ -47,6 +47,7 @@ from epm_core import (
     PlanVersion,
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
+    PortfolioOptimizer, BudgetPeriod,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
     EVMEngine, OutageCalendar, WorkflowEngine,
     PlanVersionStore,
@@ -4043,6 +4044,107 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "solo está contando el primer tramo (4.000M), no el total.",
         )
 
+    def test_portfolio_simple_uniforme_no_ancla_al_primer_periodo(self):
+        """Regresión del camino uniforme: un proyecto con construction_years=2
+        que arranca en el SEGUNDO período del plan (no en el primero) debe
+        poder seleccionarse igual que si arrancara en el primero, siempre que
+        haya presupuesto en los años que realmente ocupa."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P930", capex=4_000_000_000, exec_year=2027,
+            construction_years=2, is_mandatory=True,
+        )
+        periods = [
+            BudgetPeriod(year=2026, budget_COP=0.0),
+            BudgetPeriod(year=2027, budget_COP=3_000_000_000),
+            BudgetPeriod(year=2028, budget_COP=3_000_000_000),
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P930"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "El proyecto debía caber en 2027-2028 (2.000M cada año); si "
+            "esto falla, la matriz de CAPEX sigue anclada al índice del "
+            "primer período en vez de al candidato que se prueba.",
+        )
+        # assertIsNotNone por sí solo no discrimina aquí: bajo el bug viejo,
+        # el proyecto igual queda "seleccionado", pero en 2026 — el único
+        # año con presupuesto CERO. Eso pasa porque la matriz anclada al
+        # índice literal del año declarado (2027) deja el desplazamiento
+        # relativo de la Restricción 1 apuntando a celdas vacías cuando el
+        # candidato probado es 2026, así que el solver lo ve "gratis" ahí.
+        # El año seleccionado sí distingue: 2026 (bug, presupuesto cero) vs.
+        # 2027/2028 (arreglado, dentro de las vigencias con cupo real).
+        self.assertIn(
+            seleccionado["year"], (2027, 2028),
+            "El proyecto no debía poder seleccionarse en 2026 (presupuesto "
+            "cero ese año); si aparece ahí, la matriz de CAPEX sigue "
+            "reportando el proyecto como gratis para ese candidato.",
+        )
+
+    def test_portfolio_simple_reancla_capex_by_year(self):
+        """Mismo caso que el de EnterpriseOptimizer, para el optimizador
+        simple: el perfil debe reanclarse al año candidato."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P931", capex=0, exec_year=2028, construction_years=2,
+            capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            BudgetPeriod(year=2026, budget_COP=5_000_000_000),
+            BudgetPeriod(year=2027, budget_COP=5_000_000_000),
+            BudgetPeriod(year=2028, budget_COP=0.0),
+            BudgetPeriod(year=2029, budget_COP=0.0),
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P931"), None)
+        self.assertIsNotNone(seleccionado)
+        # assertIsNotNone por sí solo no discrimina: bajo el bug viejo, el
+        # proyecto igual queda "seleccionado", pero en 2028 — un año con
+        # presupuesto CERO — porque capex_by_year se busca por año
+        # calendario literal en vez de reanclarse, y la Restricción 1
+        # termina apuntando a celdas vacías para ese candidato. El único
+        # año realmente viable dado este presupuesto es 2026 (2026 y 2027
+        # tienen 5.000M cada uno; el perfil reanclado necesita 4.000M en
+        # el año de arranque y 4.000M en el siguiente).
+        self.assertEqual(
+            seleccionado["year"], 2026,
+            "El único año con presupuesto suficiente en los dos años que "
+            "el perfil ocupa es 2026; si se seleccionó otro año (p.ej. "
+            "2028, que tiene presupuesto cero), capex_by_year no se está "
+            "reanclando al candidato.",
+        )
+
+    def test_portfolio_simple_capex_legado_sensible_al_candidato(self):
+        """Antes de este Task, el VNT que reporta optimize() para un
+        proyecto con CAPEX legado era casi idéntico sin importar el año
+        candidato, porque el bucle interno nunca pasaba deferral_years.
+        Forzar la selección en 2026 vs. forzar la selección en 2030 (vía
+        presupuesto disponible solo en cada uno) debe dar VNT reportados
+        claramente distintos — si no difieren, deferral_years no se está
+        calculando ni pasando en el bucle de optimize()."""
+        opt = PortfolioOptimizer(config=self.cfg)
+
+        def _forzar(anio_con_cupo):
+            p = _make_project(pid="P932", capex=5_000_000_000, exec_year=anio_con_cupo,
+                              is_mandatory=True)
+            periods = [
+                BudgetPeriod(year=y, budget_COP=10_000_000_000 if y == anio_con_cupo else 0.0)
+                for y in (2026, 2030)
+            ]
+            result = opt.optimize([p], periods, base_year=2026)
+            seleccionado = next(s for s in result.selected if s["project_id"] == "P932")
+            return seleccionado["net_value_COP"]
+
+        vnt_2026 = _forzar(2026)
+        vnt_2030 = _forzar(2030)
+        self.assertGreater(
+            abs(vnt_2026 - vnt_2030), abs(vnt_2026) * 0.01,
+            "El VNT reportado entre 2026 y 2030 debía diferir en más del "
+            "1% — si difiere menos, optimize() no está pasando "
+            "deferral_years real en su bucle interno.",
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
