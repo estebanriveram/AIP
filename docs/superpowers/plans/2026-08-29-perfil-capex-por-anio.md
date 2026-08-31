@@ -525,7 +525,7 @@ por:
 - [ ] **Step 4: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 9 pruebas.
+Expected: `OK` con 11 pruebas (incluye la ampliación de alcance documentada más abajo — R12 y el reporte de utilización).
 
 - [ ] **Step 5: Correr toda la suite**
 
@@ -546,6 +546,17 @@ reparto uniforme del CAPEX total, cobrando presupuesto dos veces cuando
 el perfil era parcial. Ninguno de los dos fue introducido por el trabajo
 de esta rama — ambos predatan el perfil de CAPEX por año."
 ```
+
+**Ampliación de alcance hallada durante la ejecución de esta Task (aprobada por el usuario):** el mismo patrón de "busca el año calendario literal en vez de reanclar al candidato" apareció en dos lugares más de `EnterpriseOptimizer.optimize()`, además de R1:
+
+1. **La matriz que alimenta `budget_utilization`** (el reporte de utilización de presupuesto, ~línea 7005-7013) — no afecta ninguna decisión del MILP (R1 ya decide bien), pero el reporte mostraba 0% de utilización para un proyecto con perfil explícito en cualquier año candidato distinto del literal declarado.
+2. **R12 (restricción TOTEX)**, ~línea 7453-7459 — esta sí es una restricción real del MILP: un proyecto con perfil explícito parecía costar 0 en TOTEX para cualquier candidato no-literal, pudiendo colarse bajo un techo TOTEX que en realidad debía superar.
+
+Ambos se corrigen con el mismo patrón simplificado que ya usaba (y sigue usando) la rama uniforme en estos dos puntos: un solo valor por candidato — el tramo declarado para el año de arranque (offset 0), no un ledger multi-año completo. Ninguno de los dos intenta reconstruir un desglose año-por-año dentro de esta estructura de un-solo-valor; eso sería una revisión más profunda de `capex_matrix`/R12, fuera de alcance de esta Task.
+
+También se corrigió el escenario de `test_enterprise_r1_reancla_perfil_al_candidato`: la ventana original (2026-2030) dejaba que el candidato del borde (2030) truncara un tramo contra el límite del horizonte visible — comportamiento intencional del diseño (sección 5 del spec: un tramo fuera de ventana no consume cupo de ESTE plan), pero que confundía esta prueba específica al hacerla pasar por una razón débil. Se corrigió acotando el cupo presupuestal a una ventana interior (2025-2026 dentro de un horizonte 2020-2035) donde ningún candidato trunca ningún tramo.
+
+**Hallazgo registrado, no corregido en esta Task:** un proyecto obligatorio de valor neto negativo (que el MILP debe ejecutar igual) tiene incentivo a diferirse hasta el último período visible de cualquier horizonte finito, porque ahí un tramo de construcción de varios años cae fuera de la ventana y no consume presupuesto — el mismo comportamiento intencional de la sección 5, pero explotado por el objetivo de minimización de costo. Se verificó que esto **ya existía antes de este plan**, incluso para CAPEX legado sin perfil explícito — no lo introdujo esta Task. Corregirlo de fondo exige una decisión de diseño (acotar qué candidatos son válidos según si su ventana de construcción cabe completa en el horizonte, o documentar el límite explícitamente) — queda como asunto abierto nuevo para el registro, no como parte de este plan.
 
 ---
 
@@ -729,7 +740,7 @@ La Restricción 1 (líneas 5537-5551 actuales, el bucle que usa `t_rel = t - s`)
 - [ ] **Step 4: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 14 pruebas (3 de la Task 1 + 5 de la Task 2 + 2 de la Task 3 + 4 de este paso).
+Expected: `OK` con 15 pruebas (3 de la Task 1 + 5 de la Task 2 + 3 de la Task 3 + 4 de este paso).
 
 - [ ] **Step 5: Correr toda la suite**
 
@@ -838,12 +849,12 @@ Run: abrir `REGISTRO_ASUNTOS_ABIERTOS.md` y confirmar cuál es la última entrad
 
 - [ ] **Step 2: Agregar la entrada `D-9`**
 
-Documentar, siguiendo el formato exacto de las entradas D-1 a D-8 ya existentes: los tres defectos preexistentes encontrados (valoración de `capex_by_year` ausente; falta de reanclaje en valoración y en R1 de ambos optimizadores; mezcla de ramas en R1 del optimizador de alcance empresarial), que ninguno fue introducido por este plan, el resultado de la campaña de mutación (8/8), y el número de pruebas de la suite antes/después (232 → 246, si no se agregaron pruebas adicionales durante la ejecución real: 14 nuevas en S31, además de una prueba fortalecida durante la revisión de calidad de la Task 2 que no suma al conteo).
+Documentar, siguiendo el formato exacto de las entradas D-1 a D-8 ya existentes: los tres defectos preexistentes encontrados (valoración de `capex_by_year` ausente; falta de reanclaje en valoración y en R1 de ambos optimizadores; mezcla de ramas en R1 del optimizador de alcance empresarial), que ninguno fue introducido por este plan, también R12 (TOTEX) y el reporte de utilización de EnterpriseOptimizer, hallados en la ejecución de la Task 3, con el mismo patrón; y el hallazgo nuevo, no corregido, del incentivo a diferir al borde del horizonte para proyectos obligatorios de valor negativo), el resultado de la campaña de mutación (9/9, ver ajuste de conteo más abajo), y el número de pruebas de la suite antes/después (232 → 247, si no se agregaron pruebas adicionales durante la ejecución real: 15 nuevas en S31, además de una prueba fortalecida durante la revisión de calidad de la Task 2 que no suma al conteo).
 
 - [ ] **Step 3: Actualizar la tabla "Cobertura de la suite" con la fila S31**
 
 ```
-| S31 | Perfil de CAPEX por año — valoración por tramo vía deferral_years, reanclaje bajo escaneo, R1 de ambos optimizadores sin mezclar ramas, PortfolioOptimizer sensible al candidato | 14 | 14 |
+| S31 | Perfil de CAPEX por año — valoración por tramo vía deferral_years, reanclaje bajo escaneo, R1/R12/reporte de EnterpriseOptimizer sin mezclar ramas, PortfolioOptimizer sensible al candidato | 15 | 15 |
 ```
 
 (Ajustar el conteo si el Step 2 de la Task 5 obligó a agregar pruebas adicionales.)
