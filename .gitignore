@@ -1,0 +1,14 @@
+# Esta carpeta mezcla muchos entregables sin relación con el motor EPM AIP
+# (presentaciones PEGA, cursos, hojas de cálculo, otro proyecto de apuestas
+# del Mundial, etc.). Este repositorio versiona SOLO el motor, su suite de
+# pruebas, la configuración y la documentación de diseño — todo lo demás se
+# ignora por defecto en vez de intentar enumerarlo.
+
+*
+!*/
+!epm_core.py
+!test_suite_epm_full.py
+!config.json
+!REGISTRO_ASUNTOS_ABIERTOS.md
+!.gitignore
+!docs/**

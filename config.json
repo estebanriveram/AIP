@@ -1,0 +1,2311 @@
+{
+  "_metadata": {
+    "version": "3.8.0",
+    "created": "2026-04-23",
+    "author": "ASPD — Gerencia Planeación Empresarial EPM",
+    "approved_by": "Pendiente — sesión calibración ASPD",
+    "referentes": "ISO 55001:2024 §4.5 · IAM SSG · Copperleaf C55 VDM · epm.py v4.3 · epm_enterprise.py v1.0",
+    "changelog": {
+      "3.0.0": "Módulos Enterprise: PuLP MILP, degradación predictiva, snapshots ISO 55001. Ecuación maestra corregida (sin TF, ΔR independiente).",
+      "2.0.0": "Temporalidad C55 §5.3 (FD_lag). Filtro bu_filter. MILP multiperíodo.",
+      "1.0.0": "Versión inicial — Copperleaf C55 VDM prototipo.",
+      "3.1.0": "Umbrales de proporcionalidad por negocio (TyD/AyA/Gas/Generacion/Todos). risk_growth_rate desglosado por BU. Nota de producción snapshot_store.",
+      "3.2.0": "Motor de Dependencias Temporales (Copperleaf C55 §7.4): precedent_project_id, min_lag_years, mutual_exclusion_ids, cascade_cod, deadlock_check, restricción MILP de precedencia.",
+      "3.3.0": "Soporte portafolio TI/Proyectos Empresariales: nuevo investment_type, SC VD-2-A como driver principal, filtros bu_filter Todos. Nuevo bloque portfolio_ti con parámetros de valoración por impacto y talla. Corrección overlapping constraint names MILP (índice i en nombres). Alias PortfolioLoader para columnas Excel EPM (Código Proyecto Banco PeI). Fix pandas applymap → map compatibilidad >= 2.1.",
+      "3.4.0": "v7.2+v8.4: EAV/VEI_EAV normalizado por horizonte de activo. asset_horizons_by_bu por BU+tipo. exclusion_group_id (MILP R3d). is_baseline + evaluate_marginal(). BU_DRIVER_CONFIG: separación T&D (ENS/SAIDI) vs Generación (Disponibilidad/Indisponibilidad forzada). Tres alcances MILP: Local/Silo (bu_filter)/Enterprise Global (pisos R7). Generacion._default=35a. Alertas pedagógicas texto exacto VFDD v5.0.",
+      "3.5.0": "v14.0 EPM Value Framework Edition: value_library con Biblioteca de Valor, Portafolio EPM 5 categorías, shadow_prices unificados, reto_metrics por BU (Copperleaf C55 VDM). Descontaminación T&D. Motor Step 2 dinámico.",
+      "3.6.0": "v15.0 fix: portafolio_epm keys/labels alineados con VFDD v5.0. TI añadido a asset_horizons_by_bu. get_config() en app carga config.json directamente. Flujo secuencial Paso 2 reto a reto.",
+      "3.7.0": "Fuente unica de verdad de sub-criterios: BU_DRIVER_CONFIG migrado del hardcode de epm_core.py a config.bu_driver_config (ahora editable). investment_types gana mandatory_sc_by_bu/suggested_sc_by_bu resueltos por negocio — antes mandatory_sc referenciaba IDs inexistentes en 3 de 4 negocios para Reposicion, Expansion y Cumplimiento. Nuevo risk_matrix.consequence_anchors_by_inv_type para eventos que no son falla de activo. value_library.reto_metrics marcado OBSOLETO (nunca se cableo).",
+      "3.8.0": "Tratamiento temporal homogéneo de la ecuación maestra. (1) Se cobra la exposición al riesgo durante los años que se difiere. (2) Ventana de evaluación común entre alternativas de fecha: diferir ya no regala años extra de beneficio al final del horizonte. (3) El CAPEX diferido entra a la ecuación en valor presente, y el VEI usa ese mismo denominador. Cierran el defecto por el que, con g > r en los cuatro negocios, diferir siempre creaba valor y el año óptimo caía en el borde de la ventana. Vigiladas por el grupo S21 de la suite (6 pruebas). Sin efecto sobre la conformidad C55 (41/41). PENDIENTE ASPD: rezago y crecimiento del OPEX incremental — ver registro de asuntos abiertos."
+    },
+    "updated": "2026-05-05",
+    "last_updated": "2026-08-20"
+  },
+  "_metodologia": {
+    "ecuacion_maestra": "VNT(i) = Σ(w_r × VD_r × FD_lag(r)) − CoD + ΔR − CAPEX_VP − ΔOPEX_NPV",
+    "componentes": {
+      "beneficios": "Σ(w_r × VD_r × FD_lag) — suma ponderada de los 5 Retos descontada por temporalidad de construcción",
+      "FD_lag": "1/(1+WACC)^lag_total donde lag_total = construction_years + benefit_start_offset(driver)",
+      "CoD": "Cost of Delay = beneficios_NPV / horizonte_meses × meses_retraso — único castigo por decisión tardía",
+      "delta_r": "ΔR = (Riesgo_Base − Riesgo_Residual) × Factor_NPV, menos la exposición sufrida durante los años que se difiere. Componente independiente, NO entra en CoD.",
+      "costos": "−(CAPEX_VP + ΔOPEX_NPV) con weight = -1.0. CAPEX_VP es el desembolso inflado por diferimiento y traído a valor presente.",
+      "VEI": "VNT / CAPEX — Índice de Eficiencia de la Inversión",
+      "ventana": "Horizonte de evaluación COMÚN entre alternativas de fecha: diferir d años no agrega d años de beneficio al final."
+    },
+    "correcciones_v4_3": [
+      "Eliminado TF (timing_factor) sobre beneficios — duplicaba el castigo del CoD",
+      "ΔR separado del CoD — era doble conteo",
+      "FD_lag es el único descuento por temporalidad (construcción + rampa por driver)"
+    ],
+    "optimizador": "PuLP + CBC (Enterprise). scipy HiGHS (legacy). Restricciones: presupuesto por vigencia, persona-mes, concurrencia, riesgo portafolio, dependencias.",
+    "degradacion": "Motor Weibull/Lineal/Escalón/Acelerado. EEOL = año donde costo_mantener > costo_reemplazar. Alimenta Optimal Timing.",
+    "trazabilidad": "SnapshotStore append-only con SHA-256. Exporta reporte ISO 55001 §4.5.5.",
+    "portafolio_ti": "Portafolio TI usa VD-2-A (OPEX evitado) como driver principal. CAPEX calibrado por impacto × talla. Tipo inversión: Proyecto Empresarial/TI | Eficiencia Operativa | Cumplimiento Regulatorio. Proyectos en Ejecución: is_mandatory=True. Proyectos en Formulación: is_mandatory=False.",
+    "bug_fixes_v3_3": [
+      "MILP: nombres de restricción ahora incluyen índice numérico para evitar colisiones con IDs duplicados",
+      "PortfolioLoader: aliases 'Código Proyecto Banco PeI' y 'Nombre Proyecto PeI' añadidos",
+      "Streamlit: pandas.Styler.applymap reemplazado por .map (pandas >= 2.1)",
+      "PortfolioLoader: deduplicación automática de IDs duplicados con sufijo _02, _03"
+    ]
+  },
+  "wacc": 0.1,
+  "_wacc_nota": "Tasa de descuento corporativa EPM. Fuente: Gerencia Financiera. Revisión anual (enero).",
+  "analysis_horizon_years": 10,
+  "_horizon_nota": "Período de proyección de beneficios. Conservador frente a vida útil real (25-40a activos eléctricos). Revisión cada 3 años.",
+  "optimal_timing": {
+    "horizon_years": 5,
+    "risk_growth_rate_by_bu": {
+      "TyD": 0.15,
+      "AyA": 0.1,
+      "Gas": 0.12,
+      "Generacion": 0.13,
+      "_nota": "Tasa de degradación del riesgo base por BU (%/año). TyD calibrado con SIGEAS EPM + benchmarks IEEE Std 493. AyA/Gas/Gen: propuesta basada en benchmarks sectoriales — pendiente calibración con curvas SIGEAS reales.",
+      "_revision": "Cada 2 años o con incorporación de datos SIGEAS actualizados."
+    },
+    "capex_inflation_rate": 0.04,
+    "_capex_nota": "Escalación CAPEX por postergación: 4%/año (IPC construcción + sobrecosto emergencia). Revisión anual DANE."
+  },
+  "proportionality_thresholds_COP": {
+    "_nota": "Umbrales por Unidad de Negocio. IAM SSG Fig.7 — el rigor debe ser proporcional al impacto. Calibrados con distribución histórica de portafolios EPM 2020-2025.",
+    "_revision": "Sesión ASPD — Abril 2026. Próxima revisión: con Plan Empresa 2026-2036.",
+    "TyD": {
+      "_nota": "T&D maneja los proyectos más grandes del portafolio EPM. Umbral full más alto.",
+      "full_model_COP": 10000000000,
+      "simplified_model_COP": 1000000000,
+      "_full_label": "≥ $10.000MM: VNT + w_r + Optimal Timing + MILP Enterprise + Sensibilidad",
+      "_simplified_label": "≥ $1.000MM: VNT + w_r (sin MILP ni Optimal Timing)",
+      "_rule_based_label": "< $1.000MM: checklist de criterios documentados"
+    },
+    "AyA": {
+      "_nota": "AyA tiene proyectos de menor escala unitaria. Umbral full más bajo.",
+      "full_model_COP": 5000000000,
+      "simplified_model_COP": 500000000,
+      "_full_label": "≥ $5.000MM: VNT + w_r + Optimal Timing + MILP Enterprise + Sensibilidad",
+      "_simplified_label": "≥ $500MM: VNT + w_r",
+      "_rule_based_label": "< $500MM: checklist"
+    },
+    "Gas": {
+      "_nota": "Gas tiene proyectos medianos a grandes (expansión de redes).",
+      "full_model_COP": 5000000000,
+      "simplified_model_COP": 500000000,
+      "_full_label": "≥ $5.000MM: modelo completo",
+      "_simplified_label": "≥ $500MM: VNT + w_r",
+      "_rule_based_label": "< $500MM: checklist"
+    },
+    "Generacion": {
+      "_nota": "Generación tiene proyectos de alta inversión y larga vida útil. Umbral full alto.",
+      "full_model_COP": 10000000000,
+      "simplified_model_COP": 2000000000,
+      "_full_label": "≥ $10.000MM: modelo completo",
+      "_simplified_label": "≥ $2.000MM: VNT + w_r",
+      "_rule_based_label": "< $2.000MM: checklist"
+    },
+    "Todos": {
+      "_nota": "Proyectos transversales (TI, ESG, corporativos). Escala intermedia.",
+      "full_model_COP": 5000000000,
+      "simplified_model_COP": 500000000,
+      "_full_label": "≥ $5.000MM: modelo completo",
+      "_simplified_label": "≥ $500MM: VNT + w_r",
+      "_rule_based_label": "< $500MM: checklist",
+      "_ti_nota": "Para proyectos TI: Full >= $5.000MM (ERP, plataformas enterprise), Simplified >= $500MM (módulos, integraciones medianas), Rule-Based < $500MM (mejoras funcionales, reportes, ajustes)."
+    }
+  },
+  "enterprise_optimizer": {
+    "_nota": "Parámetros del módulo EnterpriseOptimizer (PuLP). Calibrar con capacidad real del equipo EPM.",
+    "solver": "CBC",
+    "solver_time_limit_s": 120,
+    "mip_gap": 0.01,
+    "person_months_table": [
+      {
+        "capex_min_MM": 0,
+        "capex_max_MM": 1000,
+        "person_months": 2.0
+      },
+      {
+        "capex_min_MM": 1000,
+        "capex_max_MM": 10000,
+        "person_months": 6.0
+      },
+      {
+        "capex_min_MM": 10000,
+        "capex_max_MM": 50000,
+        "person_months": 15.0
+      },
+      {
+        "capex_min_MM": 50000,
+        "capex_max_MM": 200000,
+        "person_months": 35.0
+      },
+      {
+        "capex_min_MM": 200000,
+        "capex_max_MM": 999999,
+        "person_months": 80.0
+      }
+    ],
+    "_tabla_nota": "Estimación persona-mes por rango CAPEX. Calibrar con datos reales EPM (PMO). Revisión semestral.",
+    "person_months_table_ti": [
+      {
+        "capex_min_MM": 0,
+        "capex_max_MM": 100,
+        "person_months": 1.5,
+        "_ejemplo": "Ajuste funcional, reporte, mejora pequeña"
+      },
+      {
+        "capex_min_MM": 100,
+        "capex_max_MM": 500,
+        "person_months": 4.0,
+        "_ejemplo": "Módulo nuevo, integración, automatización RPA"
+      },
+      {
+        "capex_min_MM": 500,
+        "capex_max_MM": 2000,
+        "person_months": 10.0,
+        "_ejemplo": "Plataforma mediana, migración, BI enterprise"
+      },
+      {
+        "capex_min_MM": 2000,
+        "capex_max_MM": 8000,
+        "person_months": 25.0,
+        "_ejemplo": "ERP, plataforma enterprise, transformación digital"
+      },
+      {
+        "capex_min_MM": 8000,
+        "capex_max_MM": 999999,
+        "person_months": 60.0,
+        "_ejemplo": "Proyectos estratégicos multiaño (Saphiro, Evolución Org.)"
+      }
+    ],
+    "_ti_nota": "Los proyectos TI tienen menor consumo de persona-mes de ingeniería de campo pero mayor consumo de recursos de gestión de cambio y capacitación. La tabla person_months_table_ti refleja perfil TI. Usar person_months_table para proyectos de activos físicos."
+  },
+  "asset_horizons_by_bu": {
+    "_nota": "Horizontes de análisis por Unidad de Negocio y tipo de activo (v7.2). Usados por ValueEngine.get_horizon_for_asset() para calcular EAV justo y evitar que activos de larga vida (40a) ganen injustamente sobre tecnología (5-7a) por simple acumulación de beneficios. Fuentes: ISO 55001 §6.2, RETIE, benchmarks IEEE/IEC, política contable EPM.",
+    "_revision": "Sesión ASPD — Mayo 2026. Calibrar con vida útil contable EPM (SIGEAS).",
+    "AyA": {
+      "_default": 40,
+      "_nota": "Infraestructura hídrica: vida útil regulatoria 40 años (CRA). Tuberías y obra civil dominan el portafolio.",
+      "tuberia_asbesto_cemento": 40,
+      "tuberia_PVC": 30,
+      "tuberia_PEAD": 35,
+      "tuberia_ductil": 50,
+      "bomba_centrifuga": 20,
+      "planta_tratamiento": 40,
+      "tanque_almacenamiento": 50,
+      "macromedidor": 15,
+      "sistema_control_SCADA": 7,
+      "medidor_AMI": 10
+    },
+    "TyD": {
+      "_default": 30,
+      "_nota": "Activos T&D: transformadores y subestaciones tienen vida útil 30-40a (RETIE). Equipos de control 10-15a.",
+      "transformador_potencia": 30,
+      "transformador_distribucion": 25,
+      "interruptor_potencia": 25,
+      "celda_MT": 20,
+      "cable_energia": 35,
+      "linea_transmision": 40,
+      "subestacion_GIS": 30,
+      "subestacion_AIS": 30,
+      "sistema_control_SCADA": 10,
+      "medidor_AMI": 12,
+      "reconectador": 20,
+      "banco_condensadores": 20
+    },
+    "Gas": {
+      "_default": 25,
+      "_nota": "Redes de gas: vida útil 25-40a para tuberías de acero. Reguladores y medidores 15-20a.",
+      "red_acero_gas": 40,
+      "red_polietileno_gas": 50,
+      "regulador_presion": 15,
+      "medidor_gas": 15,
+      "estacion_compresion": 25,
+      "sistema_control_SCADA": 7,
+      "valvula_seccionamiento": 20
+    },
+    "Generacion": {
+      "_default": 35,
+      "_nota": "Generación hidro: 35a default (turbinas/generadores). Presas 75a. Renovables 25a. Rango spec v8.4: 35-40a. Fuente: IEC 60034, benchmarks EPM Porce/Guatapé.",
+      "turbina_hidraulica": 40,
+      "generador_sincrono": 35,
+      "presa_concreto": 75,
+      "presa_tierra": 75,
+      "transformador_elevador": 30,
+      "sistema_control_SCADA": 8,
+      "panel_solar": 25,
+      "aerogenerador": 25,
+      "unidad_generacion_hidro": 40,
+      "equipo_auxiliar_planta": 20
+    },
+    "TI": {
+      "_default": 7,
+      "_nota": "Proyectos TI / Proyectos Empresariales: vida útil corta 5-10a por obsolescencia tecnológica. Incluye plataformas digitales, ERP, SCADA, BI, automatización.",
+      "ERP_SAP": 10,
+      "sistema_ERP": 10,
+      "plataforma_BI": 5,
+      "sistema_GIS": 7,
+      "plataforma_AMI": 10,
+      "ciberseguridad": 5,
+      "nube_cloud": 5,
+      "automatizacion_RPA": 5,
+      "sistema_SCADA": 7,
+      "plataforma_digital": 7,
+      "servidor_aplicaciones": 8,
+      "switch_core": 7,
+      "enlace_fibra": 15,
+      "data_center": 15,
+      "software_licencias": 5
+    },
+    "Todos": {
+      "_default": 10,
+      "_nota": "Proyectos transversales TI y ESG: vida útil corta 5-10a por obsolescencia tecnológica.",
+      "ERP": 7,
+      "plataforma_BI": 5,
+      "sistema_gis": 7,
+      "plataforma_AMI": 10,
+      "ciberseguridad": 5,
+      "nube_cloud": 5,
+      "automatizacion_RPA": 5
+    },
+    "_global": {
+      "_nota": "Fallback global por tipo de activo, independiente de BU. Se usa cuando el BU no tiene configurado el tipo.",
+      "sistema_control_SCADA": 7,
+      "medidor_AMI": 10,
+      "ERP": 7,
+      "plataforma_BI": 5,
+      "ciberseguridad": 5
+    }
+  },
+  "shadow_prices_indicators": {
+    "_nota": "Indicadores para monetización de shadow prices por restricción activa del MILP. Permiten mostrar pedagogicamente cuánto valor adicional genera relajar 1 unidad de cada restricción. Actualizados con tarifas regulatorias 2025-2026.",
+    "_revision": "Anual — sincronizar con actualizaciones XM, CRA, ANLA.",
+    "AyA": {
+      "_label": "Agua y Aguas",
+      "IPCU_por_m3": {
+        "_label": "Índice de Pérdidas en Conducción y Utilización",
+        "valor_COP_m3": 3100,
+        "_fuente": "Tarifa CRA 688/2014 + costo producción promedio AyA EPM 2025",
+        "_interpretacion": "Cada m³/año adicional de reducción de pérdidas vale $3.100/año = $19.000 NPV a 10 años WACC 10%"
+      },
+      "continuidad_horas_mes": {
+        "_label": "Horas de continuidad de servicio (m³ no suministrado)",
+        "valor_COP_hora_cliente": 22000,
+        "_fuente": "Costo operativo carrotanque AMVA 2024",
+        "_interpretacion": "Cada hora-cliente de interrupción evitada vale $22.000 (costo carrotanque de emergencia)"
+      },
+      "frecuencia_roturas_km_año": {
+        "_label": "Frecuencia de roturas por km de red por año",
+        "valor_COP_rotura": 15000000,
+        "_fuente": "Costo promedio reparación urgente AyA 2024 + daños terceros",
+        "_interpretacion": "Cada rotura evitada vale ~$15MM (reparación + agua perdida + daños)"
+      },
+      "nox_m3_tratado": {
+        "_label": "Calidad del agua — NTU (turbidez) evitada",
+        "valor_COP_evento": 800000000,
+        "_fuente": "Costo promedio sanción CRA + pérdida de ingresos por evento de calidad",
+        "_interpretacion": "Cada evento de calidad fuera de norma evitado vale ~$800MM (multa + imagen + pérdida clientes)"
+      }
+    },
+    "Gas": {
+      "_label": "Gas Natural",
+      "frecuencia_fugas_km_año": {
+        "_label": "Frecuencia de fugas por km de red por año",
+        "valor_COP_fuga": 50000000,
+        "_fuente": "Costo promedio atención fuga Gas EPM 2024 + costo gas fugado + riesgo seguridad",
+        "_interpretacion": "Cada fuga evitada vale ~$50MM (atención + gas + riesgo explosión L3)"
+      },
+      "presion_bar": {
+        "_label": "Presión de servicio (bar)",
+        "valor_COP_bar_año": 25000000,
+        "_fuente": "Costo de clientes no atendidos por baja presión (pérdida LTV + multa CREG)",
+        "_interpretacion": "Cada bar adicional de presión sostenida genera ~$25MM/año de valor por clientes atendidos"
+      },
+      "odorizacion_ppm": {
+        "_label": "Detección de odorización fuera de rango",
+        "valor_COP_evento": 200000000,
+        "_fuente": "Costo regulatorio CREG + riesgo seguridad clase L3-L4",
+        "_interpretacion": "Cada evento de odorización fuera de norma evitado vale ~$200MM"
+      }
+    },
+    "TyD": {
+      "_label": "Transmisión y Distribución",
+      "ENS_MWh_año": {
+        "_label": "Energía No Suministrada evitada (MWh/año)",
+        "valor_COP_MWh": 335000,
+        "_fuente": "XM — precio promedio bolsa eléctrica 3 años 2022-2024",
+        "_interpretacion": "Cada MWh evitado de ENS vale $335.000 = $2.06MM NPV a 10a WACC 10%"
+      },
+      "SAIDI_horas_cliente_año": {
+        "_label": "SAIDI — horas-cliente de interrupción por año",
+        "valor_COP_hora_cliente": 6200,
+        "_fuente": "VENS XM 2024 + mix de clientes EPM (residencial/industrial/comercial)",
+        "_interpretacion": "Cada hora-cliente de interrupción evitada vale $6.200 (valoración social regulatoria)"
+      },
+      "multa_CREG_COP": {
+        "_label": "Multa CREG evitada",
+        "valor_COP_multa": 1,
+        "_fuente": "Conversión directa 1:1 — 1 COP de multa = 1 COP de valor",
+        "_interpretacion": "Cada COP de multa CREG evitada equivale a 1 COP de VNT"
+      },
+      "nueva_conexion_LTV": {
+        "_label": "Nuevas conexiones habilitadas (LTV)",
+        "valor_COP_conexion_electrica": 5200000,
+        "valor_COP_conexion_acueducto": 6800000,
+        "_fuente": "Facturación proyectada 15-20 años al WACC 10%. Revisado con datos facturación EPM 2024.",
+        "_interpretacion": "Cada nueva conexión eléctrica habilitada vale $5.2MM (LTV). Acueducto $6.8MM."
+      }
+    },
+    "Generacion": {
+      "_label": "Generación",
+      "MWh_generado_año": {
+        "_label": "Capacidad de generación incremental (MWh/año)",
+        "valor_COP_MWh": 220000,
+        "_fuente": "Precio contrato largo plazo EPM + prima renovables 2025",
+        "_interpretacion": "Cada MWh adicional de generación firme vale ~$220.000 en precio contrato"
+      },
+      "tCO2_evitadas_año": {
+        "_label": "Toneladas CO₂ evitadas por año",
+        "valor_COP_tCO2": 88000,
+        "_fuente": "Mercado voluntario CORNARE 2025 + precio carbono corporativo EPM",
+        "_interpretacion": "Cada tCO₂ evitada vale $88.000 = $540.000 NPV a 10a"
+      },
+      "multa_ANLA_COP": {
+        "_label": "Multa ANLA evitada",
+        "valor_COP_evento": 3200000000,
+        "_fuente": "Ley 1333/2009 + historial multas ANLA EPM. Referencia: eventos Hidroituango.",
+        "_interpretacion": "Cada evento de multa ANLA evitado vale $3.200MM (nivel L4 típico)"
+      }
+    }
+  },
+  "degradation_engine": {
+    "_nota": "Parámetros del motor AssetDegradationEngine. Calibrar con curvas de vida útil reales por clase de activo (SIGEAS EPM + benchmarks IEEE/IEC).",
+    "opex_growth_rate": 0.08,
+    "_opex_growth_nota": "Crecimiento anual del OPEX de mantenimiento por degradación: 8%/año benchmark IEEE. Ajustar por clase de activo.",
+    "weibull_beta_by_class": {
+      "_nota": "beta Weibull por clase de activo. beta<1=mortalidad infantil, beta=1=falla aleatoria, beta>1=desgaste. Fuente por BU indicada en _fuentes_*.",
+      "_revision": "v3.7.0 — Mayo 2026. Corrección crítica AC (1.0→2.0) + expansión clases AyA con bibliografía auditada.",
+      "_T&D": "── Transmisión y Distribución ──────────────────────────────────",
+      "transformador_potencia": {
+        "beta": 1.31,
+        "_eta_años": 290,
+        "_fuente": "CIGRE / Martin & Tenbohlen (2026), 'Power Transformer Component Reliability Using CIGRE Large-Scale Data Surveys', Energies 19(13):3197 — Tabla 3, cuerpo activo >200 kV (26.533 transformadores, 331.379 años-operación, revisado por pares, con intervalos de confianza). β≈1,31 indica una distribución casi aleatoria (poco desgaste marcado por edad); η=290 años es la vida característica MATEMÁTICA de esa distribución plana, no una vida física esperada — a edades reales la PoF resultante es baja (~9,5% a 50a). Alineado con el ancla de la Estrategia de Reposición de Transformadores de Generación. Reemplaza el valor previo de AusNet/AER (β=3,5/η=50, TRR 2023-27 App.3A) — correctamente atribuido pero sesgado por el programa de reemplazo preventivo reconocido en el propio documento fuente; CIGRE 2026 es la fuente poblacional de mayor rigor disponible. IMPACTO: baja materialmente la PoF calculada de transformadores en todo el modelo AIP (a 50a: ~63% con AusNet → ~9,5% con CIGRE)."
+      },
+      "interruptor_potencia": {
+        "beta": 2.8,
+        "_eta_años": 30,
+        "_fuente": "IEEE Std 493-2007 (Gold Book) Tabla 3-13"
+      },
+      "celda_MT": {
+        "beta": 2.5,
+        "_eta_años": 25,
+        "_fuente": "IEEE Std 493-2007; IEC 62271-200:2021"
+      },
+      "cable_energia": {
+        "beta": 3.0,
+        "_eta_años": 35,
+        "_fuente": "CIGRÉ TB 379 (2009) Cable System Reliability"
+      },
+      "sistema_control_SCADA": {
+        "beta": 1.5,
+        "_eta_años": 15,
+        "_fuente": "IEC 61511-1:2016 (SIL); IEEE Std 493-2007"
+      },
+      "medidor_AMI": {
+        "beta": 1.8,
+        "_eta_años": 12,
+        "_fuente": "EPRI 3002000829 (2013) AMI Reliability"
+      },
+      "_AyA": "── Agua y Aguas ─────────────────────────────────────────────────",
+      "tuberia_asbesto_cemento": {
+        "beta": 2.0,
+        "_eta_años": 55,
+        "_fuente": "Pelletier et al. (2003) JWRPM 129(6); Mailhot et al. (2000) Urban Water 2(4); Vladeanu & Koo (2015) AWWA Water Science — CORRECCIÓN: era 1.0 (incorrecto, régimen constante)"
+      },
+      "tuberia_PVC": {
+        "beta": 1.4,
+        "_eta_años": 65,
+        "_fuente": "Rajani & Kleiner (2004) Urban Water 6(4); Taiwo et al. (2023) Water Resources Research doi:10.1029/2022WR033256"
+      },
+      "tuberia_hierro_ductil": {
+        "beta": 1.5,
+        "_eta_años": 70,
+        "_fuente": "Kimutai et al. (2015) AWWA Water Science; Kahn et al. (2020) aws2.1179 — CI al 100% falla a 60a, DI a 90a"
+      },
+      "tuberia_acero": {
+        "beta": 1.8,
+        "_eta_años": 50,
+        "_fuente": "AWWA M11 Steel Pipe Manual 4th ed. (2004); Taiwo et al. (2023) WRR033256"
+      },
+      "tuberia_HDPE": {
+        "beta": 1.3,
+        "_eta_años": 80,
+        "_fuente": "ISO 4427-1:2019 §6 (PE100 life design); Rajani & Kleiner (2004)"
+      },
+      "bomba_centrifuga": {
+        "beta": 2.1,
+        "_eta_años": 18,
+        "_fuente": "ABB (2012) Reliability Analysis Applied to Centrifugal Pumps (library.abb.com); OREDA 2015 Vol.1 §Pumps"
+      },
+      "valvula_seccionamiento": {
+        "beta": 1.6,
+        "_eta_años": 20,
+        "_fuente": "OREDA 2015 Vol.1 (Isolation Valves); WRF Report 4569 (2017)"
+      },
+      "macromedidor": {
+        "beta": 1.7,
+        "_eta_años": 14,
+        "_fuente": "ISO 4064-1:2014 §7; AWWA M6 Water Meters 4th ed."
+      },
+      "tanque_almacenamiento": {
+        "beta": 1.5,
+        "_eta_años": 40,
+        "_fuente": "ACI 350-06 §4 Durability; AWWA D110 Wire-Wound Concrete Tanks"
+      },
+      "planta_tratamiento_filtro": {
+        "beta": 1.6,
+        "_eta_años": 25,
+        "_fuente": "EPA/ASCE Manual of Practice MOP-36; AWWA B100 (Granular Filter Material)"
+      },
+      "_Generacion": "── Generación ───────────────────────────────────────────────",
+      "turbina_hidraulica": {
+        "beta": 2.1,
+        "_eta_años": 35,
+        "_fuente": "IEC 60041:1991 §8; Nunes et al. (2021) IEEE Access (q-Weibull hydropower sector)"
+      },
+      "generador_sincrono": {
+        "beta": 2.3,
+        "_eta_años": 30,
+        "_fuente": "CIGRÉ TB 775 (2019) Reliability of Rotating Machines; IEEE Std 67-2005 §4.3"
+      },
+      "valvula_mariposa_hidro": {
+        "beta": 1.7,
+        "_eta_años": 22,
+        "_fuente": "OREDA 2015 Vol.1 Tabla ISO-3; API RP 689:2007 Annex B"
+      },
+      "sistema_excitacion": {
+        "beta": 1.5,
+        "_eta_años": 16,
+        "_fuente": "IEEE Std 421.3-2016; CIGRÉ SC A1 Survey 2018"
+      },
+      "gobernador_velocidad": {
+        "beta": 1.7,
+        "_eta_años": 20,
+        "_fuente": "IEC 61362:2012 §6.4 (Hydraulic Turbine Control)"
+      },
+      "_Gas": "── Gas Natural ──────────────────────────────────────────────────",
+      "compresor_centrifugo": {
+        "beta": 2.0,
+        "_eta_años": 20,
+        "_fuente": "OREDA 2015 Vol.1 §4 (Compressors); ISO 14224:2016 Annex B §B.4"
+      },
+      "compresor_reciprocante": {
+        "beta": 1.7,
+        "_eta_años": 16,
+        "_fuente": "OREDA 2015 Vol.1; Bloch & Geitner Machinery Component Maintenance 4th ed. Cap.6"
+      },
+      "tuberia_acero_alta_presion": {
+        "beta": 1.5,
+        "_eta_años": 45,
+        "_fuente": "EGIG Report 2022 9th ed. (1970-2019) Tabla 6; ASME B31.8S-2020 §4.3.1"
+      },
+      "valvula_control_gas": {
+        "beta": 1.5,
+        "_eta_años": 14,
+        "_fuente": "OREDA 2015 Vol.1 (Control Valves); IEC 61508-6:2010 Annex B"
+      },
+      "valvula_seguridad_PSV": {
+        "beta": 1.4,
+        "_eta_años": 12,
+        "_fuente": "API 14C:2017 §5; ISA-TR96.05.01:2008"
+      },
+      "medidor_ultrasonico_gas": {
+        "beta": 1.7,
+        "_eta_años": 13,
+        "_fuente": "ISO 17089-1:2010 §9; OIML R 137-1:2012 §8.3"
+      },
+      "intercambiador_calor_gas": {
+        "beta": 1.9,
+        "_eta_años": 25,
+        "_fuente": "OREDA 2015; TEMA Standards 9th ed. (2007) §7"
+      },
+      "estacion_regulacion_medida": {
+        "beta": 1.5,
+        "_eta_años": 28,
+        "_fuente": "IGEM/TD/13 Ed.3 (2018) §5.2; EN 12186:2014"
+      }
+    },
+    "consequence_by_class": {
+      "_nota": "Nivel de consecuencia L1-L5 por clase de activo. Anclas: L4=$5.000MM (Impacto regional), L5=$25.000MM (Hidroituango).",
+      "_T&D": "── Transmisión y Distribución ──────────────────────────────────",
+      "transformador_potencia": 4,
+      "interruptor_potencia": 4,
+      "celda_MT": 3,
+      "cable_energia": 3,
+      "sistema_control_SCADA": 3,
+      "medidor_AMI": 2,
+      "_AyA": "── Agua y Aguas ─────────────────────────────────────────────────",
+      "tuberia_asbesto_cemento": 3,
+      "tuberia_PVC": 2,
+      "tuberia_hierro_ductil": 3,
+      "tuberia_acero": 3,
+      "tuberia_HDPE": 2,
+      "bomba_centrifuga": 3,
+      "valvula_seccionamiento": 2,
+      "macromedidor": 2,
+      "tanque_almacenamiento": 3,
+      "planta_tratamiento_filtro": 3,
+      "_Generacion": "── Generación ───────────────────────────────────────────────",
+      "turbina_hidraulica": 4,
+      "generador_sincrono": 4,
+      "valvula_mariposa_hidro": 3,
+      "sistema_excitacion": 3,
+      "gobernador_velocidad": 3,
+      "_Gas": "── Gas Natural ──────────────────────────────────────────────────",
+      "compresor_centrifugo": 3,
+      "compresor_reciprocante": 3,
+      "tuberia_acero_alta_presion": 3,
+      "valvula_control_gas": 3,
+      "valvula_seguridad_PSV": 3,
+      "medidor_ultrasonico_gas": 2,
+      "intercambiador_calor_gas": 2,
+      "estacion_regulacion_medida": 3
+    }
+  },
+  "snapshot_store": {
+    "_nota": "Parámetros del SnapshotStore ISO 55001 §4.5.5.",
+    "storage_dir": "./snapshots",
+    "hash_algorithm": "SHA-256",
+    "audit_export_format": "JSON",
+    "_immutability": "Los snapshots son append-only. Ningún registro puede eliminarse o modificarse. El hash SHA-256 garantiza detección de alteraciones.",
+    "_produccion_nota": "En producción reemplazar storage_dir con ruta de red compartida o bucket. Opciones: (a) carpeta compartida \\\\epm-nas\\aspd\\snapshots, (b) bucket S3/GCS si EPM usa nube, (c) ruta local por analista en entorno controlado. No existe impedimento técnico — es decisión de arquitectura IT EPM.",
+    "portfolios_soportados": [
+      "Inversiones_T_D (activos físicos T&D 2026-2030)",
+      "Portafolio_TI_AIP (iniciativas TI/Proyectos Empresariales)",
+      "AyA_Portafolio (pendiente carga)",
+      "Gas_Portafolio (pendiente carga)",
+      "Generacion_Portafolio (pendiente carga)"
+    ]
+  },
+  "risk_matrix": {
+    "_nota": "Anclas calibradas con eventos reales EPM. Revisión anual con Gestión del Riesgo EPM.",
+    "consequence_levels": {
+      "1": {
+        "label": "Muy Menor",
+        "value_COP": 80000000,
+        "_componentes": {
+          "directo_COP": 50000000,
+          "regulatorio_COP": 5000000,
+          "reputacional_COP": 25000000
+        },
+        "_ancla": "Falla sin afectación perceptible al usuario. Reparación en guardia normal. Sin cobertura mediática.",
+        "_ejemplos": [
+          "Falla fusible MT sin salida de clientes",
+          "Fuga menor gas <10 m³"
+        ]
+      },
+      "2": {
+        "label": "Menor",
+        "value_COP": 400000000,
+        "_componentes": {
+          "directo_COP": 200000000,
+          "regulatorio_COP": 50000000,
+          "reputacional_COP": 150000000
+        },
+        "_ancla": "Afectación localizada <4h a <500 usuarios. Reporte interno. Mención en redes sociales.",
+        "_ejemplos": [
+          "Interrupción barrial <4h",
+          "Baja presión agua sector puntual"
+        ]
+      },
+      "3": {
+        "label": "Moderado",
+        "value_COP": 2000000000,
+        "_componentes": {
+          "directo_COP": 800000000,
+          "regulatorio_COP": 500000000,
+          "reputacional_COP": 700000000
+        },
+        "_ancla": "Afectación regional >4h o daño ambiental menor. Reporte reguladores. Cobertura prensa local.",
+        "_ejemplos": [
+          "Interrupción >8h a >5.000 usuarios T&D",
+          "Vertimiento menor AyA con reporte ANLA"
+        ]
+      },
+      "4": {
+        "label": "Mayor",
+        "value_COP": 12000000000,
+        "_componentes": {
+          "directo_COP": 4000000000,
+          "regulatorio_COP": 3000000000,
+          "reputacional_COP": 5000000000
+        },
+        "_ancla": "Impacto regional severo >24h o daño ambiental significativo. Multa ANLA. Cobertura nacional.",
+        "_ejemplos": [
+          "Falla SE 220kV con blackout regional",
+          "Derrame contaminante cuenca hídrica"
+        ]
+      },
+      "5": {
+        "label": "Catastrófico",
+        "value_COP": 50000000000,
+        "_componentes": {
+          "directo_COP": 15000000000,
+          "regulatorio_COP": 10000000000,
+          "reputacional_COP": 25000000000
+        },
+        "_ancla": "Falla sistémica nacional. Pérdida de vidas o daño ambiental irreversible. Crisis institucional.",
+        "_ejemplos": [
+          "Referencia: Hidroituango 2018"
+        ],
+        "_nota": "L5 calibrado como fracción del impacto real Hidroituango. Reputacional = pérdida de confianza + sobrecostos financiación + valor de marca en 10 años."
+      }
+    },
+    "probability_levels": {
+      "1": {
+        "label": "Muy Baja",
+        "annual_prob": 0.002,
+        "_ancla": "Activo en óptimo estado — vida útil restante > 80%"
+      },
+      "2": {
+        "label": "Baja",
+        "annual_prob": 0.01,
+        "_ancla": "Activo en buen estado — mantenimiento al día"
+      },
+      "3": {
+        "label": "Moderada",
+        "annual_prob": 0.05,
+        "_ancla": "Activo con señales de deterioro — inspección reciente"
+      },
+      "4": {
+        "label": "Alta",
+        "annual_prob": 0.2,
+        "_ancla": "Activo degradado — fin de vida útil próximo"
+      },
+      "5": {
+        "label": "Muy Alta",
+        "annual_prob": 0.7,
+        "_ancla": "Activo crítico en emergencia — falla inminente"
+      }
+    },
+    "_calibracion_v3": "Anclas recalibradas v3.0 para incluir costo total de consecuencia: directo + regulatorio + reputacional. El riesgo reputacional NO es un Value Driver separado — está colapsado en el valor de cada nivel L1-L5 (metodología Copperleaf C55). Fuentes: Ley 1333/2009 (ANLA), Res. CREG 015/2018, historial EPM, benchmarks C55.",
+    "consequence_anchors_by_inv_type": {
+      "_nota": "Reescribe SOLO el texto de anclaje de los niveles 1-5 cuando el evento adverso no es la falla de un activo. Los valores monetarios siguen saliendo de consequence_levels_by_bu — esto no cambia ningun calculo, solo lo que lee el analista. Los tipos que usan la rama Weibull (Reposicion, Eficiencia) NO aparecen aqui: para ellos el anclaje de falla fisica es el correcto.",
+      "Crecimiento/Expansión": {
+        "_evento": "no atender la demanda (conexiones y capacidad no logradas)",
+        "1": "Demanda insatisfecha marginal, absorbible con la red actual. Sin reclamos.",
+        "2": "Solicitudes de conexion demoradas en un sector. Reclamos puntuales.",
+        "3": "Zona sin capacidad de conexion por meses. Reclamos ante el regulador.",
+        "4": "Bloqueo del crecimiento en una region. Perdida de mercado y requerimiento regulatorio.",
+        "5": "Incapacidad estructural de atender la demanda. Riesgo de franquicia o intervencion."
+      },
+      "Cumplimiento Regulatorio": {
+        "_evento": "la sancion del ente regulador por incumplir",
+        "1": "Hallazgo menor subsanable en el plazo ordinario. Sin multa.",
+        "2": "Requerimiento formal con plan de accion. Amonestacion o multa baja.",
+        "3": "Sancion economica con plan de cumplimiento supervisado.",
+        "4": "Sancion significativa con seguimiento especial del regulador.",
+        "5": "Sancion maxima, suspension de actividad o riesgo sobre la concesion."
+      },
+      "ESG / Sostenibilidad": {
+        "_evento": "el incidente ambiental o social",
+        "1": "Afectacion contenida sin dano al entorno. Sin reporte externo.",
+        "2": "Incidente localizado con remediacion rapida. Reporte a la autoridad ambiental.",
+        "3": "Dano ambiental reversible. Multa ambiental y atencion a la comunidad.",
+        "4": "Dano ambiental significativo. Sancion ANLA, conflicto social y cobertura mediatica.",
+        "5": "Dano irreversible al ecosistema o a la comunidad. Crisis institucional."
+      },
+      "Proyecto Empresarial/TI": {
+        "_evento": "la indisponibilidad u obsolescencia del sistema",
+        "1": "Degradacion de servicio imperceptible para el usuario.",
+        "2": "Indisponibilidad breve de un sistema no critico.",
+        "3": "Caida de un sistema de soporte a la operacion durante horas.",
+        "4": "Caida de un sistema critico. Afectacion a la operacion y a la facturacion.",
+        "5": "Perdida de sistemas criticos o de datos. Continuidad del negocio comprometida."
+      }
+    }
+  },
+  "value_drivers": [
+    {
+      "id": "VD-1",
+      "reto": "Calidad de los Servicios",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-1-A",
+          "label": "ENS Evitada (energía no suministrada)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "MWh/año",
+          "price_per_unit_COP": 335000,
+          "_fuente": "XM precio bolsa media 3 años",
+          "bu_filter": [
+            "TyD",
+            "Generacion"
+          ]
+        },
+        {
+          "id": "VD-1-B",
+          "label": "SAIDI/SAIFI (horas-cliente interrupción)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "horas-cliente/año",
+          "price_per_unit_COP": 6200,
+          "_fuente": "VENS XM 2024 + mix clientes EPM",
+          "bu_filter": [
+            "TyD"
+          ]
+        },
+        {
+          "id": "VD-1-C",
+          "label": "Continuidad suministro agua (m³)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "m3/año",
+          "price_per_unit_COP": 3100,
+          "_fuente": "Tarifa CRA 688/2014 + costo producción",
+          "bu_filter": [
+            "AyA"
+          ]
+        },
+        {
+          "id": "VD-1-D",
+          "label": "ICTAC (horas carrotanque evitadas)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "usuario-hora/año",
+          "price_per_unit_COP": 22000,
+          "_fuente": "Costo operativo AMVA 2024",
+          "bu_filter": [
+            "AyA"
+          ]
+        },
+        {
+          "id": "VD-1-E",
+          "label": "Disponibilidad hidráulica (MWh)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "MWh/año",
+          "price_per_unit_COP": 355000,
+          "_fuente": "XM + OEF CREG",
+          "bu_filter": [
+            "Generacion"
+          ]
+        },
+        {
+          "id": "VD-1-F",
+          "label": "Reputación EPM (NPS + CX + imagen)",
+          "type": "concept_rating",
+          "weight": 1.0,
+          "value_function": "s_curve",
+          "vf_inflection": 5.0,
+          "vf_steepness": 1.5,
+          "scale_max_COP": 320000000000,
+          "scale_max_by_bu": {
+            "TyD": 280000000000,
+            "AyA": 320000000000,
+            "Generacion": 380000000000,
+            "Gas": 180000000000,
+            "Todos": 420000000000
+          },
+          "_calibracion": "20% ingreso regulado anual × factor exposición reputacional",
+          "deprecated": true,
+          "deprecated_reason": "El riesgo reputacional está ahora incorporado en las anclas L1-L5 de la matriz de consecuencias (metodología Copperleaf C55). Usar VD-1-F Y la matriz de riesgos sería doble conteo. Conservado para trazabilidad de evaluaciones históricas.",
+          "deprecated_since": "config_v3.0.0"
+        }
+      ]
+    },
+    {
+      "id": "VD-2",
+      "reto": "Servicios Eficientes",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-2-A",
+          "label": "OPEX evitado (reducción costos O&M)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "COP/año",
+          "price_per_unit_COP": 1,
+          "_fuente": "Directo: 1 COP ahorrado = 1 COP de valor"
+        },
+        {
+          "id": "VD-2-B",
+          "label": "Pérdidas gas evitadas (m³)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "m3/año",
+          "price_per_unit_COP": 2100,
+          "_fuente": "Precio puerta + distribución",
+          "bu_filter": [
+            "Gas"
+          ]
+        },
+        {
+          "id": "VD-2-C",
+          "label": "Reducción pérdidas técnicas electricidad (MWh)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "MWh/año",
+          "price_per_unit_COP": 335000,
+          "_fuente": "XM precio bolsa",
+          "bu_filter": [
+            "TyD"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "VD-3",
+      "reto": "Cobertura Universal Sostenible",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-3-A",
+          "label": "Nuevas conexiones T&D (LTV cliente)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "conexiones",
+          "price_per_unit_COP": 5200000,
+          "_fuente": "Facturación × 15 años × WACC 10%",
+          "bu_filter": [
+            "TyD"
+          ]
+        },
+        {
+          "id": "VD-3-B",
+          "label": "Nuevas conexiones AyA (LTV cliente)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "conexiones",
+          "price_per_unit_COP": 6800000,
+          "_fuente": "Facturación dual × 20 años × WACC 10%",
+          "bu_filter": [
+            "AyA"
+          ]
+        },
+        {
+          "id": "VD-3-C",
+          "label": "Nuevas conexiones Gas (LTV cliente)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "conexiones",
+          "price_per_unit_COP": 4100000,
+          "_fuente": "Facturación × 20 años × WACC 10%",
+          "bu_filter": [
+            "Gas"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "VD-4",
+      "reto": "Protección Hídrica y Carbono Neutralidad",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-4-A",
+          "label": "Reducción emisiones GEI (tCO₂eq)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "tCO2eq/año",
+          "price_per_unit_COP": 88000,
+          "_fuente": "Costo abatimiento CORNARE 2025"
+        },
+        {
+          "id": "VD-4-B",
+          "label": "Protección hídrica (ha ecosistemas)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "ha/año",
+          "price_per_unit_COP": 4800000,
+          "_fuente": "Fondo Agua EPM + CORNARE",
+          "bu_filter": [
+            "AyA",
+            "Generacion"
+          ]
+        },
+        {
+          "id": "VD-4-C",
+          "label": "Multas ambientales evitadas (eventos ANLA)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "eventos/año",
+          "price_per_unit_COP": 3200000000,
+          "_fuente": "Ley 1333/2009 + historial ANLA"
+        }
+      ]
+    },
+    {
+      "id": "VD-5",
+      "reto": "Generación de Valor",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-5-A",
+          "label": "Ingresos habilitados / multas CREG evitadas",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "COP/año",
+          "price_per_unit_COP": 1,
+          "_fuente": "Directo regulatorio"
+        },
+        {
+          "id": "VD-5-B",
+          "label": "Paradas PTAR evitadas (horas)",
+          "type": "monetizable",
+          "weight": 1.0,
+          "unit": "horas/año",
+          "price_per_unit_COP": 4500000,
+          "_fuente": "Costos by-pass + riesgo ANLA",
+          "bu_filter": [
+            "AyA"
+          ]
+        },
+        {
+          "id": "VD-5-C",
+          "label": "Rentabilidad portafolio de activos",
+          "type": "concept_rating",
+          "weight": 1.0,
+          "value_function": "s_curve",
+          "vf_inflection": 5.0,
+          "vf_steepness": 1.5,
+          "scale_max_COP": 400000000000,
+          "scale_max_by_bu": {
+            "TyD": 350000000000,
+            "AyA": 400000000000,
+            "Generacion": 600000000000,
+            "Gas": 200000000000,
+            "Todos": 1750000000000
+          },
+          "_calibracion": "Base activos por negocio × 5pp mejora máxima benchmark CREG",
+          "_nota_reclasificacion": "Mantenido como Concept Rating. Aplica a proyectos de Growth con impacto en rentabilidad de la base de activos regulados. Es un beneficio estratégico sin precio de mercado directo — único caso válido de CR en el modelo (no es riesgo)."
+        }
+      ]
+    }
+  ],
+  "investment_types": {
+    "Reposición de Activos": {
+      "description": "Reemplazar activos al final de su vida útil",
+      "mandatory_sc": [
+        "VD-1-A",
+        "VD-1-B",
+        "VD-2-A"
+      ],
+      "suggested_sc": [
+        "VD-5-A",
+        "VD-1-F",
+        "VD-2-C"
+      ],
+      "_nota": "T&D por defecto. AyA usa VD-1-C/VD-1-D en lugar de VD-1-A/VD-1-B",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-1-A",
+          "VD-1-B",
+          "VD-2-A"
+        ],
+        "AyA": [
+          "VD-1-C",
+          "VD-1-D",
+          "VD-2-A"
+        ],
+        "Gas": [
+          "VD-1-E",
+          "VD-2-A"
+        ],
+        "Generacion": [
+          "VD-1-G",
+          "VD-1-H",
+          "VD-2-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [
+          "VD-5-D"
+        ],
+        "AyA": [
+          "VD-5-E"
+        ],
+        "Gas": [
+          "VD-5-E"
+        ],
+        "Generacion": [
+          "VD-5-A"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    },
+    "Crecimiento/Expansión": {
+      "description": "Ampliar capacidad o cobertura de la red",
+      "mandatory_sc": [
+        "VD-3-A",
+        "VD-2-A"
+      ],
+      "suggested_sc": [
+        "VD-1-A",
+        "VD-1-B",
+        "VD-5-A",
+        "VD-4-A"
+      ],
+      "_nota": "VD-3-A para T&D, VD-3-B para AyA, VD-3-C para Gas",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-3-A",
+          "VD-2-A"
+        ],
+        "AyA": [
+          "VD-3-B",
+          "VD-2-A"
+        ],
+        "Gas": [
+          "VD-3-C",
+          "VD-2-A"
+        ],
+        "Generacion": [
+          "VD-2-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [
+          "VD-1-A",
+          "VD-1-B",
+          "VD-5-D",
+          "VD-4-A"
+        ],
+        "AyA": [
+          "VD-1-C",
+          "VD-1-D",
+          "VD-5-E",
+          "VD-4-A"
+        ],
+        "Gas": [
+          "VD-1-E",
+          "VD-5-E",
+          "VD-4-A"
+        ],
+        "Generacion": [
+          "VD-1-G",
+          "VD-1-H",
+          "VD-5-A",
+          "VD-4-A"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    },
+    "Cumplimiento Regulatorio": {
+      "description": "Requerido por CREG, ANLA u otro ente regulador",
+      "mandatory_sc": [
+        "VD-5-A"
+      ],
+      "suggested_sc": [
+        "VD-4-C",
+        "VD-2-A",
+        "VD-1-F"
+      ],
+      "_nota": "is_mandatory=True por defecto. VD-5-A captura multas evitadas",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-5-D"
+        ],
+        "AyA": [
+          "VD-5-E"
+        ],
+        "Gas": [
+          "VD-5-E"
+        ],
+        "Generacion": [
+          "VD-5-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [
+          "VD-2-A"
+        ],
+        "AyA": [
+          "VD-4-B",
+          "VD-2-A"
+        ],
+        "Gas": [
+          "VD-2-A"
+        ],
+        "Generacion": [
+          "VD-4-B",
+          "VD-2-A"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    },
+    "Eficiencia Operativa": {
+      "description": "Reducir OPEX o pérdidas operativas",
+      "mandatory_sc": [
+        "VD-2-A"
+      ],
+      "suggested_sc": [
+        "VD-2-C",
+        "VD-2-B",
+        "VD-1-A",
+        "VD-5-C"
+      ],
+      "_nota": "Driver principal siempre VD-2-A. OPEX evitado en COP/año",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-2-A"
+        ],
+        "AyA": [
+          "VD-2-A"
+        ],
+        "Gas": [
+          "VD-2-A"
+        ],
+        "Generacion": [
+          "VD-2-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [
+          "VD-1-A"
+        ],
+        "AyA": [
+          "VD-1-C"
+        ],
+        "Gas": [
+          "VD-1-E"
+        ],
+        "Generacion": [
+          "VD-1-G"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    },
+    "ESG / Sostenibilidad": {
+      "description": "Carbono, protección hídrica, social",
+      "mandatory_sc": [
+        "VD-4-A"
+      ],
+      "suggested_sc": [
+        "VD-4-B",
+        "VD-4-C",
+        "VD-1-F"
+      ],
+      "_nota": "VD-4-A tCO2eq + VD-4-B ha ecosistemas + VD-4-C multas ANLA",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-4-A"
+        ],
+        "AyA": [
+          "VD-4-A"
+        ],
+        "Gas": [
+          "VD-4-A"
+        ],
+        "Generacion": [
+          "VD-4-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [],
+        "AyA": [
+          "VD-4-B"
+        ],
+        "Gas": [],
+        "Generacion": [
+          "VD-4-B"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    },
+    "Proyecto Empresarial/TI": {
+      "description": "Sistemas de información, plataformas digitales, transformación TI",
+      "mandatory_sc": [
+        "VD-2-A"
+      ],
+      "suggested_sc": [
+        "VD-5-C",
+        "VD-5-A",
+        "VD-1-F"
+      ],
+      "_nota": "Driver principal: VD-2-A (OPEX evitado por automatización). VD-5-C para proyectos de rentabilidad/productividad. VD-5-A para proyectos regulatorios TI. bu_filter=Todos — aplica a todos los negocios.",
+      "mandatory_sc_by_bu": {
+        "TyD": [
+          "VD-2-A"
+        ],
+        "AyA": [
+          "VD-2-A"
+        ],
+        "Gas": [
+          "VD-2-A"
+        ],
+        "Generacion": [
+          "VD-2-A"
+        ]
+      },
+      "suggested_sc_by_bu": {
+        "TyD": [
+          "VD-5-D"
+        ],
+        "AyA": [
+          "VD-5-E"
+        ],
+        "Gas": [
+          "VD-5-E"
+        ],
+        "Generacion": [
+          "VD-5-A"
+        ]
+      },
+      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
+    }
+  },
+  "dependency_engine": {
+    "_nota": "Configuración del motor de Dependencias Temporales (Copperleaf C55 §7.4).",
+    "_revision": "Con cada actualización del portafolio de proyectos.",
+    "cascade_cod_enabled": true,
+    "_cascade_nota": "Si True: cuando el padre se posterga, el Costo de la Demora (CoD) del hijo se suma al del padre (Efecto Cascada de Valor). El CoD acumulado de la cadena padre→hijo refleja el impacto real de retrasar un proyecto crítico que bloquea a otros. Si False: cada proyecto calcula su CoD independientemente.",
+    "cascade_cod_weight": 1.0,
+    "_cascade_weight_nota": "Factor multiplicador del CoD del hijo que se suma al padre. 1.0 = suma completa del CoD hijo. 0.5 = suma solo el 50% (para dependencias parciales). Rango sugerido: 0.5 - 1.0.",
+    "deadlock_check_enabled": true,
+    "_deadlock_nota": "Si True: el sistema detecta dependencias circulares (A→B→A) y lanza un error antes de iniciar la optimización. Siempre debe estar activado en producción.",
+    "mutual_exclusion_symmetric": true,
+    "_mutex_nota": "Si True: si A.mutual_exclusion_ids contiene B, automáticamente B.mutual_exclusion_ids incluye A (simetría automática). Evita errores de configuración por olvido.",
+    "precedence_constraint_type": "cumulative",
+    "_precedence_nota": "Tipo de restricción de precedencia: 'cumulative' (Copperleaf C55 §7.4):   sum_{k=1}^{t} x_hijo(k) <= sum_{k=1}^{t-lag} x_padre(k)   — el hijo puede iniciar solo si el padre ya fue seleccionado,     respetando el lag mínimo en años. Este es el tipo estándar — no modificar sin aprobación ASPD.",
+    "max_dependency_depth": 5,
+    "_depth_nota": "Profundidad máxima de la cadena de dependencias (A→B→C→D→E). Proyectos con cadenas más largas son señalados con advertencia. En portafolios de infraestructura típica EPM, profundidad > 3 es inusual.",
+    "_ejemplos_aya": {
+      "descripcion": "Ejemplos reales AyA — dependencias de red hídrica",
+      "P001_tuberia_matriz": {
+        "precedent_project_id": "",
+        "min_lag_years": 0,
+        "hijos": [
+          "P002_red_primaria",
+          "P003_red_secundaria"
+        ]
+      },
+      "P002_red_primaria": {
+        "precedent_project_id": "P001_tuberia_matriz",
+        "min_lag_years": 1,
+        "descripcion": "La red primaria requiere que la tubería madre exista y haya sido probada (1 año de lag)"
+      },
+      "P003_red_secundaria": {
+        "precedent_project_id": "P002_red_primaria",
+        "min_lag_years": 0,
+        "descripcion": "La red secundaria puede iniciar el mismo año que la primaria"
+      }
+    },
+    "_ejemplos_gas": {
+      "descripcion": "Ejemplos reales Gas — expansión de redes",
+      "P010_gasoducto_troncal": {
+        "precedent_project_id": "",
+        "min_lag_years": 0
+      },
+      "P011_red_barrio_norte": {
+        "precedent_project_id": "P010_gasoducto_troncal",
+        "min_lag_years": 0,
+        "descripcion": "La red barrio puede iniciar el mismo año que el troncal"
+      },
+      "P012_red_barrio_sur": {
+        "precedent_project_id": "P010_gasoducto_troncal",
+        "min_lag_years": 1,
+        "descripcion": "Red sur requiere 1 año después del troncal (permisos adicionales)"
+      }
+    }
+  },
+  "portfolio_ti": {
+    "_nota": "Parámetros de valoración para portafolio de iniciativas TI/Proyectos Empresariales. Usados por PortfolioLoader y la lógica de generación de valores del optimizador.",
+    "_revision": "Con cada actualización del portafolio TI. Fuente: GTP EPM.",
+    "impacto_params": {
+      "alto": {
+        "capex_range_MM": [
+          800,
+          3500
+        ],
+        "vei_range": [
+          0.45,
+          1.2
+        ],
+        "cons_base": 4,
+        "prob_base": 3,
+        "_nota": "Proyectos que generan cambio significativo en valor entregado al cliente"
+      },
+      "medio-alto": {
+        "capex_range_MM": [
+          300,
+          900
+        ],
+        "vei_range": [
+          0.35,
+          0.9
+        ],
+        "cons_base": 3,
+        "prob_base": 3,
+        "_nota": "Proyectos de alto impacto pero alcance más acotado"
+      },
+      "medio": {
+        "capex_range_MM": [
+          80,
+          350
+        ],
+        "vei_range": [
+          0.25,
+          0.7
+        ],
+        "cons_base": 3,
+        "prob_base": 2,
+        "_nota": "Proyectos con mejora relevante pero no crítica"
+      },
+      "bajo": {
+        "capex_range_MM": [
+          20,
+          100
+        ],
+        "vei_range": [
+          0.1,
+          0.4
+        ],
+        "cons_base": 2,
+        "prob_base": 2,
+        "_nota": "Proyectos de aporte limitado — candidatos a rule-based"
+      },
+      "sin_clasificar": {
+        "capex_range_MM": [
+          50,
+          250
+        ],
+        "vei_range": [
+          0.2,
+          0.6
+        ],
+        "cons_base": 2,
+        "prob_base": 2,
+        "_nota": "Iniciativas sin impacto declarado — usar rango conservador"
+      }
+    },
+    "talla_multipliers": {
+      "1": 0.08,
+      "2": 0.12,
+      "3": 0.2,
+      "4": 0.35,
+      "5": 0.55,
+      "6": 0.75,
+      "7": 1.0,
+      "8": 1.4,
+      "9": 1.8,
+      "10": 2.2,
+      "12": 2.8,
+      "14": 3.8,
+      "17": 4.5,
+      "20": 5.5,
+      "xl": 6.0,
+      "l": 3.5,
+      "s": 0.5,
+      "<= 3 meses": 0.15,
+      "> 3 y <= 6 meses": 0.35,
+      "> 6 y <= 12 meses": 0.75,
+      "> 12 meses": 1.5,
+      "_nota": "Multiplicador sobre CAPEX base del rango de impacto"
+    },
+    "talla_construction_years": {
+      "1": 1,
+      "2": 1,
+      "3": 1,
+      "4": 1,
+      "5": 1,
+      "6": 1,
+      "7": 1,
+      "8": 1,
+      "9": 2,
+      "10": 2,
+      "12": 2,
+      "14": 2,
+      "17": 2,
+      "20": 3,
+      "xl": 2,
+      "l": 2,
+      "> 12 meses": 2,
+      "_nota": "Años de construcción estimados por talla"
+    },
+    "opex_factor_by_type": {
+      "rpa_automatizacion": 0.15,
+      "erp_sap": 0.12,
+      "ia_machine_learning": 0.1,
+      "scada_telemedida_ami": 0.08,
+      "nube_cloud_infraestructura": 0.08,
+      "gis_geoportal": 0.06,
+      "integracion_api": 0.06,
+      "abastecimiento_compras": 0.07,
+      "finanzas_contabilidad": 0.06,
+      "portal_web_experiencia": 0.05,
+      "talento_humano_rrhh": 0.05,
+      "gas_sirius_medicion": 0.05,
+      "alcantarillado_agua": 0.06,
+      "generacion_hidro": 0.05,
+      "bi_analytics_reporteria": 0.04,
+      "seguridad_ciberseguridad": 0.03,
+      "gobernanza_metodologia": 0.03,
+      "regulacion_creg_ministerio": 0.04,
+      "default": 0.05,
+      "_nota": "Factor de OPEX evitado anual como proporción del CAPEX total. Ejemplo: RPA con CAPEX $200MM → OPEX evitado = 200 × 15% = $30MM/año. Fuente: benchmarks industria TI + historial proyectos EPM."
+    },
+    "estado_mandatory_rule": {
+      "Ejecución": true,
+      "Formulación": false,
+      "_nota": "Proyectos en Ejecución son compromisos institucionales — se marcan como obligatorios en el optimizador. Proyectos en Formulación son discrecionales."
+    },
+    "fuente_mandatory_override": {
+      "Regulación": true,
+      "Mandato Interno o Externo": true,
+      "_nota": "Fuentes que fuerzan is_mandatory=True independientemente del estado"
+    },
+    "capex_clamp_MM": {
+      "min": 20,
+      "max": 8000,
+      "_nota": "Límites de CAPEX para iniciativas TI. Proyectos > $8B son outliers — revisar manualmente."
+    }
+  },
+  "value_library": {
+    "_nota": "Biblioteca de Valor EPM v14.0 — Shadow Prices unificados, Portafolio EPM y catálogo de métricas por Reto/BU. Copperleaf C55 VDM.",
+    "portafolio_epm": {
+      "_nota": "Claves internas del Portafolio EPM (VFDD v5.0). El valor es el label de visualización completo usado en la UI. Para agregar un portafolio: añadir clave+label aquí y el mapa inv_type en el app.",
+      "Sostenimiento": "🔧 1. Sostenimiento",
+      "Optimizacion": "⚙️ 2. Optimización de Operaciones",
+      "Expansion": "📡 3. Expansión de Infraestructura",
+      "Nuevas Soluciones": "💡 4. Nuevas Soluciones y Nuevos Negocios",
+      "Adquisiciones": "🤝 5. Adquisición y Desinversiones"
+    },
+    "shadow_prices": {
+      "_nota": "Precios sombra unitarios para monetización de impactos. Fuentes regulatorias 2025.",
+      "saidi_COP_h_cliente": {
+        "value": 6200,
+        "label": "SAIDI/h-cliente",
+        "source": "VENS XM 2024"
+      },
+      "ens_COP_MWh": {
+        "value": 335000,
+        "label": "ENS/MWh",
+        "source": "XM bolsa promedio 2022-2024"
+      },
+      "agua_COP_m3": {
+        "value": 3100,
+        "label": "Agua/m³",
+        "source": "CRA 688/2014"
+      },
+      "co2_COP_tCO2": {
+        "value": 88000,
+        "label": "CO₂/tCO₂eq",
+        "source": "CORNARE 2025"
+      },
+      "conexion_electrica_COP": {
+        "value": 5200000,
+        "label": "Conexión eléctrica LTV",
+        "source": "Facturación EPM 2024"
+      },
+      "conexion_acueducto_COP": {
+        "value": 6800000,
+        "label": "Conexión acueducto LTV",
+        "source": "Facturación EPM 2024"
+      },
+      "conexion_gas_COP": {
+        "value": 4100000,
+        "label": "Conexión gas LTV",
+        "source": "Facturación EPM 2024"
+      },
+      "opex_COP_per_MM": {
+        "value": 1000000,
+        "label": "OPEX/MM COP",
+        "source": "Conversión directa 1 MM = 1 MM"
+      },
+      "multa_creg_COP": {
+        "value": 1,
+        "label": "Multa CREG",
+        "source": "1:1 directo"
+      },
+      "multa_anla_COP_evento": {
+        "value": 3200000000,
+        "label": "Multa ANLA/evento",
+        "source": "Ley 1333/2009 EPM"
+      },
+      "reputacion_COP_punto": {
+        "value": 500000000,
+        "label": "Reputación/punto (0-6)",
+        "source": "Estimado ASPD 2025"
+      },
+      "generacion_COP_MWh": {
+        "value": 220000,
+        "label": "Generación/MWh",
+        "source": "Contrato LP EPM 2025"
+      },
+      "gas_fuga_COP_evento": {
+        "value": 50000000,
+        "label": "Fuga gas/evento",
+        "source": "Costo atención Gas EPM 2024"
+      },
+      "agua_rotura_COP_evento": {
+        "value": 15000000,
+        "label": "Rotura acueducto/evento",
+        "source": "Reparación urgente AyA 2024"
+      },
+      "ingresos_COP_per_MM": {
+        "value": 1000000,
+        "label": "Ingresos/MM COP",
+        "source": "Conversión directa"
+      }
+    },
+    "reto_metrics": {
+      "VD-1": {
+        "label": "Reto 1 — Calidad de los Servicios",
+        "icon": "🔵",
+        "desc": "Continuidad, confiabilidad y calidad del suministro de energía, agua y gas",
+        "by_bu": {
+          "TyD": [
+            {
+              "sc_id": "VD-1-B",
+              "label": "SAIDI evitado",
+              "unit": "h-cliente/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 2,
+              "max_val": 500000
+            },
+            {
+              "sc_id": "VD-1-A",
+              "label": "ENS evitada",
+              "unit": "MWh/año",
+              "price_key": "ens_COP_MWh",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ],
+          "Generacion": [
+            {
+              "sc_id": "VD-1-A",
+              "label": "ENS generación evitada",
+              "unit": "MWh/año",
+              "price_key": "ens_COP_MWh",
+              "nivel_sugerido": 3,
+              "max_val": 500000
+            },
+            {
+              "sc_id": "VD-1-B",
+              "label": "Horas indisponibilidad evitadas",
+              "unit": "h-planta/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 2,
+              "max_val": 8760
+            }
+          ],
+          "AyA": [
+            {
+              "sc_id": "VD-1-C",
+              "label": "Agua no suministrada evitada",
+              "unit": "m³/año",
+              "price_key": "agua_COP_m3",
+              "nivel_sugerido": 2,
+              "max_val": 10000000
+            },
+            {
+              "sc_id": "VD-1-D",
+              "label": "Horas corte agua evitadas",
+              "unit": "h-cliente/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 2,
+              "max_val": 200000
+            }
+          ],
+          "Gas": [
+            {
+              "sc_id": "VD-1-B",
+              "label": "Horas corte gas evitadas",
+              "unit": "h-cliente/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 2,
+              "max_val": 100000
+            },
+            {
+              "sc_id": "VD-1-C",
+              "label": "Fugas evitadas",
+              "unit": "eventos/año",
+              "price_key": "gas_fuga_COP_evento",
+              "nivel_sugerido": 2,
+              "max_val": 500
+            }
+          ],
+          "TI": [
+            {
+              "sc_id": "VD-1-B",
+              "label": "Horas indisponibilidad sistema evitadas",
+              "unit": "h/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 1,
+              "max_val": 8760
+            }
+          ],
+          "Todos": [
+            {
+              "sc_id": "VD-1-B",
+              "label": "Interrupciones de servicio evitadas",
+              "unit": "h-cliente/año",
+              "price_key": "saidi_COP_h_cliente",
+              "nivel_sugerido": 1,
+              "max_val": 100000
+            }
+          ]
+        },
+        "reputacion": {
+          "label": "Impacto Reputacional",
+          "unit": "puntos (0-6)",
+          "price_key": "reputacion_COP_punto",
+          "desc": "Percepción de calidad por clientes, reguladores y medios. 0=sin impacto, 6=impacto crítico."
+        }
+      },
+      "VD-2": {
+        "label": "Reto 2 — Servicios Eficientes",
+        "icon": "🟢",
+        "desc": "Reducción de costos AOM y optimización operativa (ahorro OPEX anual)",
+        "by_bu": {
+          "Todos": [
+            {
+              "sc_id": "VD-2-A",
+              "label": "Ahorro OPEX anual",
+              "unit": "MM COP/año",
+              "price_key": "opex_COP_per_MM",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ]
+        }
+      },
+      "VD-3": {
+        "label": "Reto 3 — Cobertura Universal",
+        "icon": "🟡",
+        "desc": "Habilitación de nuevas conexiones y clientes al servicio EPM",
+        "by_bu": {
+          "TyD": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "Nuevas conexiones eléctricas",
+              "unit": "conexiones",
+              "price_key": "conexion_electrica_COP",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ],
+          "AyA": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "Nuevas conexiones acueducto",
+              "unit": "conexiones",
+              "price_key": "conexion_acueducto_COP",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ],
+          "Gas": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "Nuevas conexiones gas",
+              "unit": "conexiones",
+              "price_key": "conexion_gas_COP",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ],
+          "Generacion": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "GWh adicionales habilitados",
+              "unit": "MWh/año",
+              "price_key": "generacion_COP_MWh",
+              "nivel_sugerido": 2,
+              "max_val": 1000000
+            }
+          ],
+          "TI": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "Usuarios habilitados digitalmente",
+              "unit": "usuarios",
+              "price_key": "reputacion_COP_punto",
+              "nivel_sugerido": 1,
+              "max_val": 100000
+            }
+          ],
+          "Todos": [
+            {
+              "sc_id": "VD-3-A",
+              "label": "Nuevas conexiones habilitadas",
+              "unit": "conexiones",
+              "price_key": "conexion_electrica_COP",
+              "nivel_sugerido": 1,
+              "max_val": 50000
+            }
+          ]
+        }
+      },
+      "VD-4": {
+        "label": "Reto 4 — Protección Hídrica y Carbono Neutralidad",
+        "icon": "🌿",
+        "desc": "Reducción de emisiones GEI y cumplimiento de compromisos ambientales ANLA",
+        "by_bu": {
+          "Todos": [
+            {
+              "sc_id": "VD-4-A",
+              "label": "CO₂ evitado",
+              "unit": "tCO₂eq/año",
+              "price_key": "co2_COP_tCO2",
+              "nivel_sugerido": 2,
+              "max_val": 100000
+            },
+            {
+              "sc_id": "VD-4-B",
+              "label": "Multas ANLA evitadas",
+              "unit": "eventos/año",
+              "price_key": "multa_anla_COP_evento",
+              "nivel_sugerido": 1,
+              "max_val": 10
+            }
+          ]
+        }
+      },
+      "VD-5": {
+        "label": "Reto 5 — Generación de Valor",
+        "icon": "💰",
+        "desc": "EBITDA, ingresos habilitados y multas regulatorias CREG evitadas",
+        "by_bu": {
+          "Todos": [
+            {
+              "sc_id": "VD-5-A",
+              "label": "Ingresos incrementales",
+              "unit": "MM COP/año",
+              "price_key": "ingresos_COP_per_MM",
+              "nivel_sugerido": 2,
+              "max_val": 100000
+            },
+            {
+              "sc_id": "VD-5-B",
+              "label": "Multas regulatorias evitadas (CREG)",
+              "unit": "MM COP/año",
+              "price_key": "ingresos_COP_per_MM",
+              "nivel_sugerido": 2,
+              "max_val": 50000
+            }
+          ]
+        }
+      },
+      "_OBSOLETO": "NO USAR. Bloque introducido en v3.5.0 que nunca se cableo: ningun componente de produccion lo lee. Su numeracion de sub-criterios discrepa de bu_driver_config (p.ej. VD-4-B = 'Multas ANLA' aqui pero 'Proteccion hidrica' en value_drivers). La fuente unica de verdad es bu_driver_config. Se conserva solo por trazabilidad."
+    }
+  },
+  "planned_outages": {
+    "_description": "Calendario corporativo de ventanas de mantenimiento/interrupcion programada. Fuente: PMO EPM / SAP PM. Cruce automatico con ProjectInput.asset_id. Proyectos con require_outage_alignment=True solo pueden ejecutarse en anios con outage. Formato asset_id: <BU>-<TIPO>-<ID> ej: TyD-TR-001, AyA-PTAP-Norte, Gas-RE-Bello.",
+    "_nota": "Actualizar con el calendario real de PMO antes de cada ciclo de planificacion.",
+    "outages": [
+      {
+        "outage_id": "OUT-TyD-TR001-Norte-2026",
+        "asset_id": "TyD-TR-001",
+        "year": 2026,
+        "name": "Mantenimiento Mayor TR-001 SE Norte",
+        "duration_days": 14,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-TyD-TR001-Norte-2028",
+        "asset_id": "TyD-TR-001",
+        "year": 2028,
+        "name": "Mantenimiento Mayor TR-001 SE Norte",
+        "duration_days": 14,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-TyD-TR002-Sur-2027",
+        "asset_id": "TyD-TR-002",
+        "year": 2027,
+        "name": "Mantenimiento Mayor TR-002 SE Sur",
+        "duration_days": 10,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-TyD-TR003-Oriente-2026",
+        "asset_id": "TyD-TR-003",
+        "year": 2026,
+        "name": "Inspeccion TR-003 SE Oriente",
+        "duration_days": 7,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-TyD-INT-Norte-2025",
+        "asset_id": "TyD-INT-Norte-230kV",
+        "year": 2025,
+        "name": "Mantenimiento Interruptores 230kV SE Norte",
+        "duration_days": 5,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-TyD-INT-Norte-2029",
+        "asset_id": "TyD-INT-Norte-230kV",
+        "year": 2029,
+        "name": "Mantenimiento Interruptores 230kV SE Norte",
+        "duration_days": 5,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-Gen-GCF-U1-2026",
+        "asset_id": "Gen-GCF-U1",
+        "year": 2026,
+        "name": "Parada Mayor Unidad 1 Guatape-Calderas",
+        "duration_days": 45,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-Gen-GCF-U1-2030",
+        "asset_id": "Gen-GCF-U1",
+        "year": 2030,
+        "name": "Parada Mayor Unidad 1 Guatape-Calderas",
+        "duration_days": 45,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-Gen-RIO-U2-2027",
+        "asset_id": "Gen-RIO-U2",
+        "year": 2027,
+        "name": "Parada Revisada Unidad 2 Rio Grande II",
+        "duration_days": 30,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-AyA-PTAP-Norte-2026",
+        "asset_id": "AyA-PTAP-Norte",
+        "year": 2026,
+        "name": "Parada Programada PTAP Norte (limpieza reactores)",
+        "duration_days": 3,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-AyA-PTAP-Norte-2028",
+        "asset_id": "AyA-PTAP-Norte",
+        "year": 2028,
+        "name": "Parada Programada PTAP Norte",
+        "duration_days": 3,
+        "outage_type": "maintenance"
+      },
+      {
+        "outage_id": "OUT-AyA-PTAP-Sur-2027",
+        "asset_id": "AyA-PTAP-Sur",
+        "year": 2027,
+        "name": "Inspeccion PTAP Sur (regulatorio MVCT)",
+        "duration_days": 2,
+        "outage_type": "regulatory"
+      },
+      {
+        "outage_id": "OUT-Gas-RE-Bello-2026",
+        "asset_id": "Gas-RE-Bello",
+        "year": 2026,
+        "name": "Corte Seccion Gasoducto Bello (inspeccion ANLA)",
+        "duration_days": 2,
+        "outage_type": "regulatory"
+      },
+      {
+        "outage_id": "OUT-Gas-RE-Itagui-2027",
+        "asset_id": "Gas-RE-Itagui",
+        "year": 2027,
+        "name": "Ventana Reposicion Red Itagui",
+        "duration_days": 4,
+        "outage_type": "maintenance"
+      }
+    ]
+  },
+  "bu_driver_config": {
+    "TyD": {
+      "label": "Transmisión y Distribución (T&D)",
+      "focus": "Confiabilidad de red · ENS · SAIDI · Cobertura nuevas conexiones",
+      "sub_criteria": {
+        "VD-1-A": {
+          "label": "ENS evitada — Energía No Suministrada",
+          "unit": "MWh/año",
+          "price_COP": 335000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "XM — precio promedio bolsa 3 años"
+        },
+        "VD-1-B": {
+          "label": "SAIDI — horas-cliente interrupción evitadas",
+          "unit": "horas-cliente/año",
+          "price_COP": 6200,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "VENS XM 2024 + mix clientes EPM"
+        },
+        "VD-2-A": {
+          "label": "OPEX evitado (ahorro en O&M)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-2",
+          "reto": "Servicios Eficientes",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-3-A": {
+          "label": "Nuevas conexiones eléctricas habilitadas (LTV)",
+          "unit": "conexiones",
+          "price_COP": 5200000,
+          "vd_id": "VD-3",
+          "reto": "Cobertura Universal Sostenible",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "LTV facturación 15a al WACC 10%"
+        },
+        "VD-4-A": {
+          "label": "CO₂ evitado (desplazamiento generación térmica)",
+          "unit": "tCO₂eq/año",
+          "price_COP": 88000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-5-B": {
+          "label": "Multas CREG evitadas",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-5-D": {
+          "label": "Ingresos regulados CREG — Remuneración SDL/STN",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "CREG Res.015/2018 Art.15 (SDL) · Res.011/2009 (STN)",
+          "_nota": "Ingrese el ingreso anual regulado resultado de la calculadora: VRN × (WACC_CREG + tasa_dep). WACC_CREG=11.3% (Res.015/2018).",
+          "_creg_params": {
+            "wacc_reg": 0.113,
+            "inflation_ref": 0.04,
+            "asset_classes": {
+              "Líneas subtransmisión (34.5–115 kV)": 0.02,
+              "Subestaciones (34.5–115 kV)": 0.025,
+              "Redes distribución primaria (< 34.5 kV)": 0.033,
+              "Redes distribución secundaria (< 1 kV)": 0.04,
+              "Equipos de medición": 0.05,
+              "Líneas de transmisión STN (> 115 kV)": 0.015,
+              "Subestaciones STN (> 115 kV)": 0.02
+            }
+          },
+          "bu_filter": [
+            "TyD"
+          ]
+        },
+        "VD-1-TR": {
+          "label": "Riesgo de falla — transformador de potencia (ENS esperada)",
+          "unit": "MWh/año",
+          "price_COP": 335000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "transformador_potencia",
+          "_fuente": "PoF_Weibull × ENS_consecuencia · Riesgo = PoF × Consecuencia (GM-65)"
+        }
+      }
+    },
+    "Generacion": {
+      "label": "Generación",
+      "focus": "Disponibilidad de planta · Factor de planta · Riesgo activos críticos · Ingresos contrato",
+      "sub_criteria": {
+        "VD-1-G": {
+          "label": "Disponibilidad de planta evitada (MWh pérdida por indisponibilidad)",
+          "unit": "MWh/año",
+          "price_COP": 220000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios — Disponibilidad de Planta",
+          "metodologia_sugerida": "asset_aware",
+          "_fuente": "Precio contrato LP EPM + prima renovables 2025"
+        },
+        "VD-1-H": {
+          "label": "Reducción de indisponibilidad forzada (horas/año)",
+          "unit": "horas indisponibilidad/año",
+          "price_COP": 180000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios — Riesgo Activos Críticos",
+          "metodologia_sugerida": "asset_aware",
+          "_fuente": "Costo oportunidad contrato ENFICC EPM 2025"
+        },
+        "VD-2-A": {
+          "label": "OPEX evitado (mantenimiento correctivo vs. preventivo)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-2",
+          "reto": "Servicios Eficientes",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-A": {
+          "label": "CO₂ evitado (generación limpia incremental)",
+          "unit": "tCO₂eq/año",
+          "price_COP": 88000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-B": {
+          "label": "Multas ANLA evitadas (riesgo ambiental activos hídricos)",
+          "unit": "eventos/año",
+          "price_COP": 3200000000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "Ley 1333/2009 + historial ANLA EPM"
+        },
+        "VD-5-A": {
+          "label": "Ingresos contrato generación habilitados (MM COP/año)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-1-TR": {
+          "label": "Riesgo de falla — transformador elevador de planta (horas indisponibilidad esperadas)",
+          "unit": "horas indisponibilidad/año",
+          "price_COP": 180000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios — Riesgo Activos Críticos",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "transformador_potencia",
+          "_fuente": "PoF_Weibull × costo oportunidad contrato ENFICC · Riesgo = PoF × Consecuencia (GM-65)"
+        },
+        "VD-1-TUB": {
+          "label": "Riesgo de falla — tubería de conducción (penstock / galería) (horas indisponibilidad esperadas)",
+          "unit": "horas indisponibilidad/año",
+          "price_COP": 180000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios — Disponibilidad de Planta",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "tuberia_conduccion",
+          "_fuente": "PoF_Weibull × pérdida generación · ASCE MOP 79 (Steel Penstocks)"
+        }
+      }
+    },
+    "AyA": {
+      "label": "Aguas y Aguas (AyA)",
+      "focus": "Continuidad del servicio hídrico · Pérdidas · IPCU · Cobertura acueducto",
+      "sub_criteria": {
+        "VD-1-C": {
+          "label": "Agua no suministrada evitada",
+          "unit": "m³/año",
+          "price_COP": 3100,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-1-D": {
+          "label": "Horas carrotanque evitadas (ICTAC)",
+          "unit": "horas/año",
+          "price_COP": 22000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-2-A": {
+          "label": "OPEX evitado (reducción pérdidas técnicas/admin)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-2",
+          "reto": "Servicios Eficientes",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-3-B": {
+          "label": "Nuevas conexiones acueducto habilitadas (LTV)",
+          "unit": "conexiones",
+          "price_COP": 6800000,
+          "vd_id": "VD-3",
+          "reto": "Cobertura Universal Sostenible",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-A": {
+          "label": "CO₂ evitado",
+          "unit": "tCO₂eq/año",
+          "price_COP": 88000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-B": {
+          "label": "Multas ANLA evitadas",
+          "unit": "eventos/año",
+          "price_COP": 3200000000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-1-TR": {
+          "label": "Riesgo de falla — transformador estación de bombeo (m³ agua no suministrada esperados)",
+          "unit": "m³/año",
+          "price_COP": 3100,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "transformador_potencia",
+          "_fuente": "PoF_Weibull × agua no suministrada · Riesgo = PoF × Consecuencia (GM-65)"
+        },
+        "VD-1-TUB": {
+          "label": "Riesgo de falla — tubería de conducción (m³ agua no suministrada esperados)",
+          "unit": "m³/año",
+          "price_COP": 3100,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "tuberia_conduccion",
+          "_fuente": "PoF_Weibull × pérdida caudal · AWWA C200 / ISO 4427"
+        },
+        "VD-5-E": {
+          "label": "Ingresos regulados CRA — CMI por inversión en infraestructura",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "CRA Res.688/2014 §57 · Res.906/2019 — CMI acueducto/alcantarillado",
+          "_nota": "Método A (aproximación): ΔVPI × (WACC_CRA + tasa_dep). Método B (directo): MM COP/año de ΔCMI × m³/año (herramienta CRA). La inversión debe estar dentro del Plan de Inversiones CRA aprobado.",
+          "_method_options": [
+            "aproximacion",
+            "directo"
+          ],
+          "_cra_params": {
+            "wacc_cra": 0.101,
+            "wacc_nota": "~10.1% CRA 688/2014 §57. Varía por segmento bajo CRA 906/2019. EPM AyA como prestador grande: validar con radicación tarifaria vigente.",
+            "asset_classes": {
+              "Planta tratamiento agua potable (PTAP)": 0.025,
+              "Planta tratamiento aguas residuales (PTAR)": 0.025,
+              "Líneas de conducción / aducción": 0.02,
+              "Redes distribución primaria": 0.033,
+              "Redes distribución secundaria": 0.04,
+              "Reservorios y tanques": 0.02,
+              "Macro/micromedición": 0.05
+            }
+          },
+          "bu_filter": [
+            "AyA"
+          ]
+        }
+      }
+    },
+    "Gas": {
+      "label": "Gas Natural",
+      "focus": "Integridad de red · Frecuencia de fugas · Expansión cobertura gas",
+      "sub_criteria": {
+        "VD-1-E": {
+          "label": "Fugas de gas evitadas",
+          "unit": "eventos/año",
+          "price_COP": 50000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-2-A": {
+          "label": "OPEX evitado (O&M red, eficiencia operativa)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-2",
+          "reto": "Servicios Eficientes",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-3-C": {
+          "label": "Nuevas conexiones gas (LTV)",
+          "unit": "conexiones",
+          "price_COP": 3500000,
+          "vd_id": "VD-3",
+          "reto": "Cobertura Universal Sostenible",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-A": {
+          "label": "CO₂ evitado (sustitución leña/carbón por gas)",
+          "unit": "tCO₂eq/año",
+          "price_COP": 88000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-1-TR": {
+          "label": "Riesgo de falla — transformador ERM (eventos de corte esperados)",
+          "unit": "eventos/año",
+          "price_COP": 50000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "transformador_potencia",
+          "_fuente": "PoF_Weibull × costo interrupción despacho · Riesgo = PoF × Consecuencia (GM-65)"
+        },
+        "VD-1-TUB": {
+          "label": "Riesgo de falla — tubería / gasoducto (eventos de fuga esperados)",
+          "unit": "eventos/año",
+          "price_COP": 50000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "tuberia_conduccion",
+          "_fuente": "PoF_Weibull × costo fuga/corte · API 580"
+        },
+        "VD-5-E": {
+          "label": "Ingresos regulados CREG — Remuneración red gas (Cargo D)",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based",
+          "_fuente": "CREG Res.126/2010 · Res.4/2021 (WACC 10.94%) · Res.125/2020",
+          "_nota": "Remuneración anual = VRN × (WACC_gas + tasa_dep). WACC vigente: 10.94% (CREG Res.4/2021). Validar ante cambios regulatorios — el WACC fue disputado en 2023-2026.",
+          "_creg_params": {
+            "wacc_reg": 0.1094,
+            "wacc_nota": "10.94% CREG Res.4/2021. Historial: subió a 11.88% (Res.102-002/2023), revertido por Gobierno en 2026 con reembolso a usuarios.",
+            "asset_classes": {
+              "Gasoductos alta presión (> 4 bar)": 0.02,
+              "Redes media presión (0.02–4 bar)": 0.025,
+              "Redes baja presión / domiciliaria": 0.033,
+              "ERM (Estación de Regulación y Medición)": 0.035,
+              "Acometidas y medidores": 0.05
+            }
+          },
+          "bu_filter": [
+            "Gas"
+          ]
+        }
+      }
+    },
+    "Todos": {
+      "label": "Proyectos Transversales / TI",
+      "focus": "Eficiencia operativa · Transformación digital · Cumplimiento regulatorio",
+      "sub_criteria": {
+        "VD-2-A": {
+          "label": "OPEX evitado / ahorro operativo",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-2",
+          "reto": "Servicios Eficientes",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-4-A": {
+          "label": "CO₂ evitado",
+          "unit": "tCO₂eq/año",
+          "price_COP": 88000,
+          "vd_id": "VD-4",
+          "reto": "Protección Hídrica y Carbono Neutralidad",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-5-A": {
+          "label": "Ingresos incrementales / multas CREG/CRA evitadas",
+          "unit": "MM COP/año",
+          "price_COP": 1000000,
+          "vd_id": "VD-5",
+          "reto": "Generación de Valor",
+          "metodologia_sugerida": "driver_based"
+        },
+        "VD-1-TR": {
+          "label": "Riesgo de falla — transformador corporativo / UPS (horas fuera de servicio esperadas)",
+          "unit": "horas/año",
+          "price_COP": 5000000,
+          "vd_id": "VD-1",
+          "reto": "Calidad de los Servicios",
+          "metodologia_sugerida": "asset_aware",
+          "asset_family": "transformador_potencia",
+          "_fuente": "PoF_Weibull × costo hora indisponibilidad TI · Riesgo = PoF × Consecuencia (GM-65)"
+        }
+      }
+    },
+    "_nota": "FUENTE UNICA DE VERDAD de los sub-criterios por negocio. Migrado desde el hardcode de epm_core.py (v3.7.0) para que sea editable sin tocar codigo. epm_core.apply_bu_driver_config() lo aplica sobre el dict del modulo al cargar.",
+    "_migrado_de": "epm_core.BU_DRIVER_CONFIG (hardcodeado hasta v3.6.0)"
+  }
+}
