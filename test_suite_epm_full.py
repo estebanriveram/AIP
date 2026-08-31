@@ -4181,6 +4181,73 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
         vei_esperado = seleccionado["net_value_COP"] / 5_000_000_000
         self.assertAlmostEqual(seleccionado["vei"], vei_esperado, delta=1e-6)
 
+    def test_enterprise_r1_no_mezcla_ramas_bajo_presion_de_presupuesto(self):
+        """Refuerzo de test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana:
+        esa prueba mide 'used_COP' de budget_utilization, que se calcula con
+        capex_matrix (una matriz DISTINTA de la que usa la restricción R1 en
+        el propio LP) — no discrimina si R1 vuelve a mezclar ramas porque esa
+        mezcla nunca se refleja ahí. Aquí se aprieta el presupuesto del año
+        NO declarado (2027) para que la restricción R1 misma sea la que
+        decida: con capex_by_year={2026: 6.000M} y capex_COP=6.000M como
+        escalar de respaldo (self.costs.capex_COP), si R1 vuelve a caer al
+        reparto uniforme para 2027 (año sin tramo declarado dentro de la
+        ventana de 2 años), exigiría 3.000M ahí — por encima del presupuesto
+        de 1.000M — y el proyecto (obligatorio) quedaría sin poder
+        seleccionarse en ningún año. Bajo el comportamiento correcto, 2027
+        no consume nada (el perfil no declara nada ahí) y el proyecto cabe
+        en 2026 sin problema."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P935", capex=6_000_000_000, exec_year=2026, construction_years=2,
+            capex_by_year={2026: 6_000_000_000},  # 2027 deliberadamente sin declarar
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=2026, budget_COP=7_000_000_000),
+            ResourcePeriod(year=2027, budget_COP=1_000_000_000),  # insuficiente para el reparto uniforme (3.000M)
+        ]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P935"), None)
+        self.assertIsNotNone(
+            seleccionado,
+            "El perfil no declara nada en 2027, así que R1 no debería exigir "
+            "presupuesto ahí; si el proyecto no se seleccionó, R1 sigue "
+            "mezclando ramas dentro de la ventana de construcción.",
+        )
+        self.assertEqual(seleccionado["year"], 2026)
+
+    def test_portfolio_uniforme_no_ancla_al_indice_del_declarado(self):
+        """Refuerzo de test_portfolio_simple_uniforme_no_ancla_al_primer_periodo:
+        esa prueba deja que la economía del proyecto (VNT) decida el año, y
+        no discrimina si la rama uniforme de capex_matrix vuelve a anclarse
+        al índice del execution_year declarado en vez de a 0 (relativo).
+        Aquí se fuerza la discriminación con presupuesto CERO en TODAS las
+        vigencias: bajo el comportamiento correcto, capex_matrix[i, 0] (el
+        costo en el propio año de arranque) es no-nulo para CUALQUIER
+        candidato — con presupuesto cero en todas partes, el proyecto
+        obligatorio no puede caber en ningún año y queda sin seleccionar.
+        Bajo el defecto (ancla al índice absoluto del año declarado, que no
+        es el primer período), capex_matrix[i, 0] queda en cero para todo
+        candidato salvo el que coincide exactamente con ese índice absoluto,
+        así que el proyecto se ve 'gratis' y se selecciona pese al
+        presupuesto cero."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P936", capex=4_000_000_000, exec_year=2028, construction_years=1,
+            is_mandatory=True,
+        )
+        periods = [BudgetPeriod(year=y, budget_COP=0.0) for y in (2026, 2027, 2028, 2029)]
+        result = opt.optimize([p], periods, base_year=2026)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P936"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con presupuesto cero en todas las vigencias, un proyecto "
+            "obligatorio con costo real no puede caber en ningún año; si "
+            "quedó seleccionado, capex_matrix (rama uniforme) se está "
+            "anclando al índice del execution_year declarado en vez de "
+            "reportar el costo relativo a CUALQUIER candidato.",
+        )
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────
