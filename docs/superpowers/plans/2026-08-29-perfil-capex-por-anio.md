@@ -830,7 +830,7 @@ La Restricción 1 (líneas 5537-5551 actuales, el bucle que usa `t_rel = t - s`)
 - [ ] **Step 4: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 15 pruebas (3 de la Task 1 + 5 de la Task 2 + 3 de la Task 3 + 4 de este paso).
+Expected: `OK` con 16 pruebas (3 de la Task 1 + 5 de la Task 2 + 4 de la Task 3 + 4 de este paso).
 
 - [ ] **Step 5: Correr toda la suite**
 
