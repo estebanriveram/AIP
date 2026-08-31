@@ -4175,23 +4175,27 @@ class ValueEngine:
             # inflados por el analista — el motor solo descuenta, no infla.
             #
             # offset_k = año_k − declared_execution_year: la FORMA del
-            # perfil, fija desde que se declaró. delta = execution_year −
-            # declared_execution_year: cuánto se movió el arranque respecto
-            # a lo declarado (0 en la evaluación normal; distinto de 0
-            # cuando un escaneo del MILP está probando un año candidato).
-            # Cada tramo se descuenta a (offset_k + delta) años desde hoy.
+            # perfil, fija desde que se declaró. Cada tramo se descuenta a
+            # (offset_k + deferral_years) años desde hoy.
             #
-            # Deliberadamente NO se suma deferral_years aquí — mezclarlo
-            # con delta duplicaría el desplazamiento en los bucles de
-            # escaneo que ya reasignan execution_year Y pasan deferral_years
-            # calculado desde una referencia distinta (ver EnterpriseOptimizer).
-            # El camino legado (else, abajo) sigue usando deferral_years
-            # exactamente como siempre.
+            # El desplazamiento temporal usa deferral_years, EXACTAMENTE
+            # como el CAPEX legado (rama else) y como los otros tres
+            # componentes de la ecuación (beneficios, riesgo, CoD) — es la
+            # única referencia temporal compartida de toda la evaluación.
+            # execution_year NO participa en esta fórmula.
+            #
+            # (Corregido tras revisión de calidad: la primera versión usaba
+            # delta = execution_year − declared_execution_year en vez de
+            # deferral_years. EnterpriseOptimizer reasigna execution_year AL
+            # CANDIDATO Y ADEMÁS pasa su propio deferral_years — dos
+            # referencias que solo coinciden por casualidad. Un proyecto
+            # declarado en 2029 evaluado como candidato en el año base del
+            # plan (deferral_years=0) daba capex_pv 31% por encima del
+            # nominal con la versión anterior.)
             declared = project.declared_execution_year or project.execution_year
-            delta = project.execution_year - declared
             capex = sum(project.costs.capex_by_year.values())
             capex_pv_por_tramo = {
-                year: monto / ((1.0 + self.wacc) ** ((year - declared) + delta))
+                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))
                 for year, monto in project.costs.capex_by_year.items()
             }
             capex_pv = sum(capex_pv_por_tramo.values())

@@ -3883,31 +3883,45 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
 
         self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
 
-    def test_capex_by_year_se_reancla_bajo_escaneo(self):
-        """Si execution_year se reasigna a un candidato distinto del
-        declarado (lo que hacen ambos optimizadores MILP al escanear), el
-        perfil se mueve junto — cada tramo aterriza 'delta' años antes o
-        después, no en su año calendario literal original."""
+    def test_capex_by_year_se_reancla_con_deferral_years(self):
+        """El perfil se reancla vía deferral_years — la referencia temporal
+        compartida por toda la ecuación — no vía execution_year. Un perfil
+        declarado en declared_execution_year, evaluado con deferral_years=3,
+        debe descontarse exactamente 3 años más que sin diferir, igual que
+        haría el CAPEX legado con ese mismo deferral_years."""
         p = _make_project(
-            pid="P913", capex=0, exec_year=2028,  # declarado en 2028
-            capex_by_year={2028: 3_000_000_000, 2029: 2_000_000_000},
+            pid="P913", capex=0, exec_year=2026,  # declarado en 2026
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
         )
-        p.execution_year = 2026  # el MILP prueba arrancar 2 años antes
-        r = self.engine.evaluate(p)
+        r = self.engine.evaluate(p, deferral_years=3)
         wacc = self.engine._get_wacc(p.business_unit)
 
-        # delta = 2026 - 2028 = -2; los tramos reanclados caen en offset
-        # (2028-2028)+(-2)=-2 y (2029-2028)+(-2)=-1 años desde "hoy" — es
-        # decir, ambos tramos habrían ocurrido ANTES del año que se evalúa
-        # como referencia, así que se descuentan hacia adelante (exponente
-        # negativo → factor > 1).
+        # offset_k = year - declared: 0 y 1. deferral_years=3 se suma a cada uno.
         capex_pv_esperado = (
-            3_000_000_000 / ((1 + wacc) ** -2) +
-            2_000_000_000 / ((1 + wacc) ** -1)
+            3_000_000_000 / ((1 + wacc) ** (0 + 3)) +
+            2_000_000_000 / ((1 + wacc) ** (1 + 3))
         )
         cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
 
         self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_by_year_convencion_enterprise_declarado_distinto_del_base(self):
+        """Réplica exacta de la convención real de EnterpriseOptimizer: se
+        reasigna execution_year AL CANDIDATO y se pasa deferral_years
+        relativo al año base del plan (no a declared_execution_year). Esta
+        es la prueba que hubiera atrapado el defecto original: con
+        declared_execution_year=2029 y un candidato = año base del plan
+        (deferral_years=0), el tramo declarado en 2029 debe valorarse SIN
+        descuento (offset=0, deferral_years=0) — no un 31% por encima del
+        nominal, que es lo que daba la fórmula con delta en vez de
+        deferral_years."""
+        p = _make_project(
+            pid="P915", capex=0, exec_year=2029,  # declarado en 2029
+            capex_by_year={2029: 1_000_000_000},
+        )
+        p.execution_year = 2026  # el MILP reasigna al candidato (año base del plan)
+        r = self.engine.evaluate(p, deferral_years=0)  # año base del plan → sin diferir
+        self.assertAlmostEqual(r["capex_pv_COP"], 1_000_000_000, delta=1.0)
 
     def test_capex_schedule_pv_reportado_por_tramo(self):
         """capex_schedule_pv_COP debe exponer cada tramo por separado, no
