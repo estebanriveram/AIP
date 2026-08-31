@@ -235,31 +235,45 @@ Agregar a `S31_PerfilCapexPorAnio`:
 
         self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
 
-    def test_capex_by_year_se_reancla_bajo_escaneo(self):
-        """Si execution_year se reasigna a un candidato distinto del
-        declarado (lo que hacen ambos optimizadores MILP al escanear), el
-        perfil se mueve junto — cada tramo aterriza 'delta' años antes o
-        después, no en su año calendario literal original."""
+    def test_capex_by_year_se_reancla_con_deferral_years(self):
+        """El perfil se reancla vía deferral_years — la referencia temporal
+        compartida por toda la ecuación — no vía execution_year. Un perfil
+        declarado en declared_execution_year, evaluado con deferral_years=3,
+        debe descontarse exactamente 3 años más que sin diferir, igual que
+        haría el CAPEX legado con ese mismo deferral_years."""
         p = _make_project(
-            pid="P913", capex=0, exec_year=2028,  # declarado en 2028
-            capex_by_year={2028: 3_000_000_000, 2029: 2_000_000_000},
+            pid="P913", capex=0, exec_year=2026,  # declarado en 2026
+            capex_by_year={2026: 3_000_000_000, 2027: 2_000_000_000},
         )
-        p.execution_year = 2026  # el MILP prueba arrancar 2 años antes
-        r = self.engine.evaluate(p)
+        r = self.engine.evaluate(p, deferral_years=3)
         wacc = self.engine._get_wacc(p.business_unit)
 
-        # delta = 2026 - 2028 = -2; los tramos reanclados caen en offset
-        # (2028-2028)+(-2)=-2 y (2029-2028)+(-2)=-1 años desde "hoy" — es
-        # decir, ambos tramos habrían ocurrido ANTES del año que se evalúa
-        # como referencia, así que se descuentan hacia adelante (exponente
-        # negativo → factor > 1).
+        # offset_k = year - declared: 0 y 1. deferral_years=3 se suma a cada uno.
         capex_pv_esperado = (
-            3_000_000_000 / ((1 + wacc) ** -2) +
-            2_000_000_000 / ((1 + wacc) ** -1)
+            3_000_000_000 / ((1 + wacc) ** (0 + 3)) +
+            2_000_000_000 / ((1 + wacc) ** (1 + 3))
         )
         cost_npv_esperado = -1.0 * (capex_pv_esperado + r["opex_incremental_npv_COP"])
 
         self.assertAlmostEqual(r["cost_npv_COP"], cost_npv_esperado, delta=1.0)
+
+    def test_capex_by_year_convencion_enterprise_declarado_distinto_del_base(self):
+        """Réplica exacta de la convención real de EnterpriseOptimizer: se
+        reasigna execution_year AL CANDIDATO y se pasa deferral_years
+        relativo al año base del plan (no a declared_execution_year). Esta
+        es la prueba que hubiera atrapado el defecto original: con
+        declared_execution_year=2029 y un candidato = año base del plan
+        (deferral_years=0), el tramo declarado en 2029 debe valorarse SIN
+        descuento (offset=0, deferral_years=0) — no un 31% por encima del
+        nominal, que es lo que daba la fórmula con delta en vez de
+        deferral_years."""
+        p = _make_project(
+            pid="P915", capex=0, exec_year=2029,  # declarado en 2029
+            capex_by_year={2029: 1_000_000_000},
+        )
+        p.execution_year = 2026  # el MILP reasigna al candidato (año base del plan)
+        r = self.engine.evaluate(p, deferral_years=0)  # año base del plan → sin diferir
+        self.assertAlmostEqual(r["capex_pv_COP"], 1_000_000_000, delta=1.0)
 
     def test_capex_schedule_pv_reportado_por_tramo(self):
         """capex_schedule_pv_COP debe exponer cada tramo por separado, no
@@ -313,23 +327,26 @@ por:
             # inflados por el analista — el motor solo descuenta, no infla.
             #
             # offset_k = año_k − declared_execution_year: la FORMA del
-            # perfil, fija desde que se declaró. delta = execution_year −
-            # declared_execution_year: cuánto se movió el arranque respecto
-            # a lo declarado (0 en la evaluación normal; distinto de 0
-            # cuando un escaneo del MILP está probando un año candidato).
-            # Cada tramo se descuenta a (offset_k + delta) años desde hoy.
+            # perfil, fija desde que se declaró — no cambia entre candidatos.
             #
-            # Deliberadamente NO se suma deferral_years aquí — mezclarlo
-            # con delta duplicaría el desplazamiento en los bucles de
-            # escaneo que ya reasignan execution_year Y pasan deferral_years
-            # calculado desde una referencia distinta (ver EnterpriseOptimizer).
-            # El camino legado (else, abajo) sigue usando deferral_years
-            # exactamente como siempre.
+            # El desplazamiento temporal usa deferral_years, EXACTAMENTE
+            # como el CAPEX legado (else, abajo) y como los otros tres
+            # componentes de la ecuación (beneficios, riesgo, CoD) — es la
+            # única referencia temporal compartida de toda la evaluación.
+            # execution_year NO participa en esta fórmula.
+            #
+            # (Versión corregida tras revisión de calidad: la primera
+            # versión usaba delta = execution_year − declared_execution_year
+            # en vez de deferral_years. EnterpriseOptimizer reasigna
+            # execution_year AL CANDIDATO Y ADEMÁS pasa su propio
+            # deferral_years — dos referencias que solo coinciden por
+            # casualidad. Un proyecto declarado en 2029 evaluado como
+            # candidato en el año base del plan (deferral_years=0) daba
+            # capex_pv 31% por encima del nominal con la versión anterior.)
             declared = project.declared_execution_year or project.execution_year
-            delta = project.execution_year - declared
             capex = sum(project.costs.capex_by_year.values())
             capex_pv_por_tramo = {
-                year: monto / ((1.0 + self.wacc) ** ((year - declared) + delta))
+                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))
                 for year, monto in project.costs.capex_by_year.items()
             }
             capex_pv = sum(capex_pv_por_tramo.values())
@@ -355,7 +372,7 @@ En `epm_core.py`, en el `return {...}` de `_evaluate_inner` (busca la línea con
 - [ ] **Step 5: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 7 pruebas (las 3 de la Task 1 más las 4 de este paso).
+Expected: `OK` con 8 pruebas (las 3 de la Task 1 más las 5 de este paso).
 
 - [ ] **Step 6: Correr toda la suite**
 
@@ -585,12 +602,42 @@ de esta rama — ambos predatan el perfil de CAPEX por año."
         result = opt.optimize([p], periods, base_year=2026)
         seleccionado = next((s for s in result.selected if s["project_id"] == "P931"), None)
         self.assertIsNotNone(seleccionado)
+
+    def test_portfolio_simple_capex_legado_sensible_al_candidato(self):
+        """Antes de este Task, el VNT que reporta optimize() para un
+        proyecto con CAPEX legado era casi idéntico sin importar el año
+        candidato, porque el bucle interno nunca pasaba deferral_years.
+        Forzar la selección en 2026 vs. forzar la selección en 2030 (vía
+        presupuesto disponible solo en cada uno) debe dar VNT reportados
+        claramente distintos — si no difieren, deferral_years no se está
+        calculando ni pasando en el bucle de optimize()."""
+        opt = PortfolioOptimizer(config=self.cfg)
+
+        def _forzar(anio_con_cupo):
+            p = _make_project(pid="P932", capex=5_000_000_000, exec_year=anio_con_cupo,
+                              is_mandatory=True)
+            periods = [
+                BudgetPeriod(year=y, budget_COP=10_000_000_000 if y == anio_con_cupo else 0.0)
+                for y in (2026, 2030)
+            ]
+            result = opt.optimize([p], periods, base_year=2026)
+            seleccionado = next(s for s in result.selected if s["project_id"] == "P932")
+            return seleccionado["net_value_COP"]
+
+        vnt_2026 = _forzar(2026)
+        vnt_2030 = _forzar(2030)
+        self.assertGreater(
+            abs(vnt_2026 - vnt_2030), abs(vnt_2026) * 0.01,
+            "El VNT reportado entre 2026 y 2030 debía diferir en más del "
+            "1% — si difiere menos, optimize() no está pasando "
+            "deferral_years real en su bucle interno.",
+        )
 ```
 
 - [ ] **Step 2: Confirmar que fallan**
 
-Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio.test_portfolio_simple_uniforme_no_ancla_al_primer_periodo test_suite_epm_full.S31_PerfilCapexPorAnio.test_portfolio_simple_reancla_capex_by_year -v`
-Expected: ambas FALLAN.
+Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio.test_portfolio_simple_uniforme_no_ancla_al_primer_periodo test_suite_epm_full.S31_PerfilCapexPorAnio.test_portfolio_simple_reancla_capex_by_year test_suite_epm_full.S31_PerfilCapexPorAnio.test_portfolio_simple_capex_legado_sensible_al_candidato -v`
+Expected: las tres FALLAN.
 
 - [ ] **Step 3: Corregir la construcción de `capex_matrix`**
 
@@ -650,21 +697,39 @@ por:
                 cy = max(1, proj.construction_years)
                 for k in range(min(cy, n_years)):
                     capex_matrix[i, k] = capex_arr[i] / cy
-            # Evaluar VNT para cada año de inicio posible
+            # Evaluar VNT para cada año de inicio posible.
+            #
+            # deferral_years se calcula y se pasa explícitamente — antes
+            # este bucle llamaba evaluate(proj) sin él, que por defecto usa
+            # deferral_years=0 SIEMPRE, sin importar qué candidato bp.year
+            # se esté probando. Verificado empíricamente antes de esta
+            # corrección: el VNT de un proyecto con CAPEX legado apenas
+            # variaba entre años candidatos (~0,1-0,2% por año, no un
+            # descuento económico real) — el escaneo de año óptimo de este
+            # optimizador era casi inerte. Mismo patrón que ya usa
+            # EnterpriseOptimizer (deferral = period.year - min(years)),
+            # reutilizando el base_year que optimize() ya recibe. También
+            # es lo que hace que capex_by_year se reancle aquí: bajo la
+            # fórmula corregida de la Task 2, esa rama usa deferral_years,
+            # no execution_year — sin este cambio, el perfil tampoco se
+            # movería con el candidato en este optimizador.
             for t, bp in enumerate(budget_periods):
                 original_exec = proj.execution_year
                 proj.execution_year = bp.year
-                r = self.engine.evaluate(proj)
+                deferral = max(0, bp.year - base_year)
+                r = self.engine.evaluate(proj, deferral_years=deferral)
                 net_values[i, t] = r["net_value_COP"]
                 proj.execution_year = original_exec
 ```
 
 La Restricción 1 (líneas 5537-5551 actuales, el bucle que usa `t_rel = t - s`) no cambia — ya asumía la semántica relativa que `capex_matrix` ahora sí tiene.
 
+**Nota:** este cambio también hace que el CAPEX legado (sin `capex_by_year`) se vuelva sensible al año candidato en este optimizador — antes era casi inerte para efectos de VNT, un límite preexistente independiente de todo este plan. `PortfolioOptimizer` no tenía pruebas antes de este plan, así que no hay ninguna regresión que romper; es una corrección, no un cambio de comportamiento que alguien dependiera de él.
+
 - [ ] **Step 4: Confirmar que pasan**
 
 Run: `python -m unittest test_suite_epm_full.S31_PerfilCapexPorAnio -v`
-Expected: `OK` con 11 pruebas.
+Expected: `OK` con 14 pruebas (3 de la Task 1 + 5 de la Task 2 + 2 de la Task 3 + 4 de este paso).
 
 - [ ] **Step 5: Correr toda la suite**
 
@@ -704,13 +769,13 @@ MUT = [
   "        if project.costs.capex_by_year:",
   "        if False and project.costs.capex_by_year:"),
 
- ("T2-B", "El offset del tramo pierde declared_execution_year — usa execution_year directo",
-  "                year: monto / ((1.0 + self.wacc) ** ((year - declared) + delta))",
-  "                year: monto / ((1.0 + self.wacc) ** (year - project.execution_year))"),
+ ("T2-B", "El tramo deja de sumar deferral_years — vuelve al defecto original (31% de más)",
+  "                year: monto / ((1.0 + self.wacc) ** ((year - declared) + deferral_years))",
+  "                year: monto / ((1.0 + self.wacc) ** (year - declared))"),
 
- ("T2-C", "delta deja de calcularse — el perfil nunca se reancla bajo escaneo",
-  "            delta = project.execution_year - declared",
-  "            delta = 0"),
+ ("T2-C", "declared_execution_year deja de usarse — se reemplaza por execution_year directo",
+  "            declared = project.declared_execution_year or project.execution_year",
+  "            declared = project.execution_year"),
 
  ("T3-A", "R1 Enterprise deja de reanclar — vuelve a buscar el año calendario literal",
   "                        delta = years[s] - declared",
@@ -733,6 +798,10 @@ MUT = [
  ("T4-B", "PortfolioOptimizer: camino uniforme deja de usar ventana relativa",
   "                for k in range(min(cy, n_years)):",
   "                for k in range(min(cy, n_years) + 1):"),
+
+ ("T4-C", "PortfolioOptimizer deja de calcular deferral_years — vuelve a evaluar siempre con 0",
+  "                deferral = max(0, bp.year - base_year)",
+  "                deferral = 0"),
 ]
 ```
 
@@ -741,13 +810,13 @@ MUT = [
 - [ ] **Step 2: Correr la campaña**
 
 Run: `python <ruta_scratchpad>/mutacion_capex_perfil.py`
-Expected: `MUERTOS 7/7`. Si algo `SOBREVIVE`, no continuar a la Task 6 — volver a las pruebas de las Tasks 2-4, identificar por qué esa prueba no distingue el comportamiento correcto del mutado (probablemente está verificando un campo reportado en vez de reconstruir el valor con un oráculo independiente — la misma lección de S30), corregir la prueba, y volver a correr la campaña completa hasta `MUERTOS 7/7`.
+Expected: `MUERTOS 8/8`. Si algo `SOBREVIVE`, no continuar a la Task 6 — volver a las pruebas de las Tasks 2-4, identificar por qué esa prueba no distingue el comportamiento correcto del mutado (probablemente está verificando un campo reportado en vez de reconstruir el valor con un oráculo independiente — la misma lección de S30), corregir la prueba, y volver a correr la campaña completa hasta `MUERTOS 8/8`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add test_suite_epm_full.py
-git commit -m "test: campaña de mutación confirma 7/7 para el perfil de CAPEX por año
+git commit -m "test: campaña de mutación confirma 8/8 para el perfil de CAPEX por año
 
 mutacion_capex_perfil.py queda documentada en el registro de asuntos
 abiertos, no en el repositorio (vive en el scratchpad de la sesión, como
@@ -769,12 +838,12 @@ Run: abrir `REGISTRO_ASUNTOS_ABIERTOS.md` y confirmar cuál es la última entrad
 
 - [ ] **Step 2: Agregar la entrada `D-9`**
 
-Documentar, siguiendo el formato exacto de las entradas D-1 a D-8 ya existentes: los tres defectos preexistentes encontrados (valoración de `capex_by_year` ausente; falta de reanclaje en valoración y en R1 de ambos optimizadores; mezcla de ramas en R1 del optimizador de alcance empresarial), que ninguno fue introducido por este plan, el resultado de la campaña de mutación (7/7), y el número de pruebas de la suite antes/después (232 → 243, si no se agregaron pruebas adicionales durante la ejecución real).
+Documentar, siguiendo el formato exacto de las entradas D-1 a D-8 ya existentes: los tres defectos preexistentes encontrados (valoración de `capex_by_year` ausente; falta de reanclaje en valoración y en R1 de ambos optimizadores; mezcla de ramas en R1 del optimizador de alcance empresarial), que ninguno fue introducido por este plan, el resultado de la campaña de mutación (8/8), y el número de pruebas de la suite antes/después (232 → 246, si no se agregaron pruebas adicionales durante la ejecución real: 14 nuevas en S31, además de una prueba fortalecida durante la revisión de calidad de la Task 2 que no suma al conteo).
 
 - [ ] **Step 3: Actualizar la tabla "Cobertura de la suite" con la fila S31**
 
 ```
-| S31 | Perfil de CAPEX por año — valoración por tramo, reanclaje bajo escaneo, R1 de ambos optimizadores sin mezclar ramas | 11 | 11 |
+| S31 | Perfil de CAPEX por año — valoración por tramo vía deferral_years, reanclaje bajo escaneo, R1 de ambos optimizadores sin mezclar ramas, PortfolioOptimizer sensible al candidato | 14 | 14 |
 ```
 
 (Ajustar el conteo si el Step 2 de la Task 5 obligó a agregar pruebas adicionales.)
