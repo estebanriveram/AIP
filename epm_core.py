@@ -7003,13 +7003,20 @@ class EnterpriseOptimizer:
             pm_req[i] = self._estimate_person_months(cap_mm)
 
             cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
+            declared = proj.declared_execution_year or proj.execution_year
             for t, period in enumerate(periods):
-                # CAPEX en esta vigencia si el proyecto inicia en t
-                if cap_by_year and period.year in cap_by_year:
-                    capex_matrix[i][t] = cap_by_year[period.year]
+                # capex_matrix[i][t] es UN SOLO número por candidato (no un
+                # ledger multi-año) — igual que la rama uniforme, que solo
+                # reporta cap_total/cy (un año de gasto), esta rama reporta
+                # el tramo declarado para el año de arranque (offset 0),
+                # reanclado. Antes: buscaba period.year literal en
+                # cap_by_year, así que para cualquier candidato que no
+                # fuera exactamente el año declarado, reportaba 0 aunque el
+                # proyecto sí tuviera costo real ahí.
+                if cap_by_year:
+                    capex_matrix[i][t] = cap_by_year.get(declared, 0.0)
                 else:
                     cy = max(1, proj.construction_years)
-                    # Distribuir uniformemente sobre cy años desde t
                     capex_matrix[i][t] = cap_total / cy
 
                 # VNT si inicia en este año (: incluir años de postergación)
@@ -7453,8 +7460,16 @@ class EnterpriseOptimizer:
                 for i, proj in enumerate(projects):
                     cy = max(1, proj.construction_years)
                     cap_by_year = getattr(proj.costs, 'capex_by_year', {}) or {}
-                    if cap_by_year and period.year in cap_by_year:
-                        capex_this = cap_by_year[period.year]
+                    declared = proj.declared_execution_year or proj.execution_year
+                    # Mismo defecto que tenía R1 antes de corregirse: buscaba
+                    # period.year literal en vez de reanclar al candidato t.
+                    # R12 solo carga TOTEX en la vigencia de inicio (s=t, ver
+                    # comentario de abajo), así que — igual que capex_matrix
+                    # arriba — solo puede representar un valor por candidato,
+                    # no un ledger multi-año: se usa el tramo declarado para
+                    # el año de arranque (offset 0).
+                    if cap_by_year:
+                        capex_this = cap_by_year.get(declared, 0.0)
                     else:
                         capex_this = proj.costs.capex_COP / cy
                     opex_npv = (getattr(proj.costs, "opex_incremental_COP_year", 0.0)

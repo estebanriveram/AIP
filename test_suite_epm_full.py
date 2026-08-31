@@ -3939,29 +3939,28 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
 
     def test_enterprise_r1_reancla_perfil_al_candidato(self):
         """Un proyecto con capex_by_year declarado en 2028/2029 debe poder
-        seleccionarse arrancando en 2026 — su gasto real debe caer en
-        2026/2027 (reanclado), no permanecer buscando 2028/2029."""
+        seleccionarse arrancando en otro año — su gasto real debe caer
+        reanclado. Solo 2025/2026 tienen cupo (interior de la ventana, lejos
+        de ambos bordes) para que ningún candidato trunque un tramo contra
+        el límite del horizonte — eso confundiría esta prueba con el
+        comportamiento intencional de 'tramo fuera de ventana no consume
+        cupo' (spec sección 5), que es un caso distinto y no se toca aquí."""
         opt = EnterpriseOptimizer(config=self.cfg)
         p = _make_project(
             pid="P920", capex=0, exec_year=2028, construction_years=2,
             capex_by_year={2028: 4_000_000_000, 2029: 4_000_000_000},
             is_mandatory=True,
         )
-        periods = [
-            ResourcePeriod(year=y, budget_COP=5_000_000_000)
-            for y in (2026, 2027, 2028, 2029, 2030)
-        ]
-        # Presupuesto solo alcanza en 2026/2027 — si el proyecto solo puede
-        # gastar en 2028/2029 (sin reanclar), el MILP no puede colocarlo aquí.
+        periods = [ResourcePeriod(year=y, budget_COP=0.0) for y in range(2020, 2036)]
         for per in periods:
-            if per.year in (2028, 2029):
-                per.budget_COP = 0.0
-        result = opt.optimize([p], periods, base_year=2026)
+            if per.year in (2025, 2026):
+                per.budget_COP = 5_000_000_000
+        result = opt.optimize([p], periods, base_year=2020)
         seleccionado = next((s for s in result.selected if s["project_id"] == "P920"), None)
         self.assertIsNotNone(
             seleccionado,
-            "El proyecto debía poder ejecutarse en 2026-2027 con su gasto "
-            "reanclado; si esto falla, R1 sigue buscando 2028/2029 literales.",
+            "Solo 2025/2026 tienen cupo simultáneo para los dos tramos "
+            "reanclados; si esto falla, R1 sigue buscando 2028/2029 literales.",
         )
 
     def test_enterprise_r1_no_mezcla_ramas_dentro_de_la_ventana(self):
@@ -3978,12 +3977,37 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
         result = opt.optimize([p], periods, base_year=2026)
         total_consumido = sum(
             per["used_COP"] for per in result.budget_utilization.values()
-        ) if hasattr(result, "budget_utilization") else None
+        )
         # El total consumido en todo el plan no puede exceder el CAPEX
         # declarado (6.000M) — si el año 2027 cobra ADEMÁS 3.000M por la
         # rama uniforme, el total sube a 9.000M.
-        self.assertIsNotNone(total_consumido)
         self.assertLessEqual(total_consumido, 6_000_000_000 + 1.0)
+
+    def test_enterprise_r12_totex_reancla_capex_by_year(self):
+        """R12 (TOTEX) debe reanclar capex_by_year al candidato igual que
+        R1 — antes, un proyecto con perfil explícito parecía costar 0 en
+        TOTEX para cualquier año candidato que no fuera exactamente el
+        declarado, dejándolo pasar el techo TOTEX cuando en realidad sí
+        debía contar."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        p = _make_project(
+            pid="P922", capex=0, exec_year=2028,
+            capex_by_year={2028: 4_000_000_000},
+            is_mandatory=True,
+        )
+        periods = [
+            ResourcePeriod(year=y, budget_COP=10_000_000_000,
+                           totex_budget_COP=1_000_000_000)  # techo bajo, aprieta
+            for y in (2025, 2026)
+        ]
+        result = opt.optimize([p], periods, base_year=2025)
+        seleccionado = next((s for s in result.selected if s["project_id"] == "P922"), None)
+        self.assertIsNone(
+            seleccionado,
+            "Con techo TOTEX de 1.000M y CAPEX real de 4.000M, el proyecto "
+            "no debía caber en ningún año — si se seleccionó, R12 sigue "
+            "viendo el perfil reanclado como gratis (costo 0).",
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
