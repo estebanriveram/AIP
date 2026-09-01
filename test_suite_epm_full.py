@@ -3126,7 +3126,7 @@ class S25_FuncionDeValor(unittest.TestCase):
         componente reputacional todavía adentro). Esta prueba no evita que
         alguien edite un solo archivo por descuido, pero sí lo hace fallar
         cuando ocurra, en vez de quedar en silencio como la vez anterior."""
-        with open("config.json", encoding="utf-8") as f:
+        with open(PROJECT_DIR / "config.json", encoding="utf-8") as f:
             cfg_json = json.load(f)
 
         tabla_json = cfg_json["risk_matrix"]["consequence_levels_by_bu"]
