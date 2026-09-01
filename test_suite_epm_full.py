@@ -29,7 +29,7 @@ Ejecutar:
     python test_suite_epm_full.py
 """
 from __future__ import annotations
-import sys, os, io, json, csv, copy, hashlib, tempfile, unittest, time
+import sys, os, io, json, csv, copy, hashlib, tempfile, unittest, time, math
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -2968,11 +2968,13 @@ class S25_FuncionDeValor(unittest.TestCase):
     # ── VD-1-F: sub-criterio retirado, doble conteo de reputación ───────────
 
     def test_vd1f_esta_bloqueado_y_no_solo_es_pequeno(self):
-        """VD-1-F duplicaría el componente reputacional ya colapsado en las
-        anclas de riesgo. El motor debe darlo por CERO exacto y reportarlo en
-        deprecated_skipped — no basta con que 'de por sí' sea pequeño; con
-        delta_annual en su máximo (10) y una escala grande, si el bloqueo
-        fallara el aporte sería enorme y evidente."""
+        """VD-1-F duplicaría el aporte reputacional que ahora vive en
+        VD-6-A — ya no es sobre las anclas de riesgo, que dejaron de
+        cobrar componente reputacional al crear VD-6. El motor debe darlo
+        por CERO exacto y reportarlo en deprecated_skipped — no basta con
+        que 'de por sí' sea pequeño; con delta_annual en su máximo (10) y
+        una escala grande, si el bloqueo fallara el aporte sería enorme y
+        evidente."""
         sc = SubCriterionInput(id="VD-1-F", label="reputacion (retirado)",
                                type="concept_rating", delta_annual=10.0,
                                scale_max_COP=5_000_000_000.0,
@@ -2982,6 +2984,62 @@ class S25_FuncionDeValor(unittest.TestCase):
         self.assertEqual(got["value_COP"], 0.0)
         self.assertEqual(got["sc_total_COP"], 0.0)
         self.assertIn("VD-1-F", got["deprecated_skipped"])
+
+    def test_vd6_reputacion_se_calcula_como_concept_rating(self):
+        """VD-6-A debe comportarse exactamente como VD-1-F se comportaba
+        antes de retirarse: concept_rating con curva-S, oráculo
+        independiente contra _vf_scurve."""
+        sc = SubCriterionInput(
+            id="VD-6-A", label="Reputación EPM (NPS + CX + imagen)",
+            type="concept_rating", delta_annual=7.0,
+            value_function="s_curve", vf_inflection=5.0, vf_steepness=1.5,
+            scale_max_COP=320_000_000_000.0,
+        )
+        driver = DriverInput(id="VD-6", reto="Reputación", sub_criteria=[sc])
+        got = self.engine._calc_driver(driver, construction_years=1, horizon=5)
+
+        # Oráculo independiente: mismo cálculo que _apply_vf hace internamente
+        # para concept_rating, reconstruido aquí sin llamar al método probado.
+        baseline, max_range = 5.0, 5.0
+        score = ((7.0 - baseline) / max_range) * 10.0
+        sigmoid = lambda x: 1.0 / (1.0 + math.exp(-1.5 * (x - 5.0)))
+        normalized = (sigmoid(score) - sigmoid(0)) / (sigmoid(10) - sigmoid(0))
+        annual_cop = normalized * 320_000_000_000.0
+        expected_sc = self.engine._npv_annual(annual_cop, horizon=5)
+        fd_lag = 1.0 / ((1.0 + self.engine.wacc) ** 1)
+        expected = expected_sc * fd_lag
+
+        self.assertAlmostEqual(got["value_COP"], expected,
+                               delta=max(1.0, abs(expected) * 1e-6))
+
+    def test_vd6_no_esta_bloqueado_a_diferencia_de_vd1f(self):
+        """VD-6-A no debe caer en _DEPRECATED_SC — solo VD-1-F sigue
+        bloqueado, no el Reto nuevo que reemplaza su función."""
+        sc = SubCriterionInput(id="VD-6-A", label="x", type="concept_rating",
+                               delta_annual=10.0, scale_max_COP=1_000_000_000.0,
+                               value_function="linear")
+        driver = DriverInput(id="VD-6", reto="Reputación", sub_criteria=[sc])
+        got = self.engine._calc_driver(driver, construction_years=1, horizon=5)
+        self.assertNotIn("VD-6-A", got["deprecated_skipped"])
+        self.assertNotEqual(got["value_COP"], 0.0)
+
+    def test_matriz_riesgo_ya_no_cobra_componente_reputacional(self):
+        """value_COP de cada nivel de consecuencia debe ser directo+regulatorio,
+        sin el reputacional que ahora vive solo en VD-6."""
+        niveles_esperados = {
+            "1": 55_000_000, "2": 250_000_000, "3": 1_300_000_000,
+            "4": 7_000_000_000, "5": 25_000_000_000,
+        }
+        anclas = self.cfg["risk_matrix"]["consequence_levels"]
+        for nivel, esperado in niveles_esperados.items():
+            componentes = anclas[nivel]["_componentes"]
+            reconstruido = componentes["directo_COP"] + componentes["regulatorio_COP"]
+            self.assertEqual(reconstruido, esperado,
+                             f"Nivel {nivel}: directo+regulatorio no coincide con el "
+                             f"value_COP esperado — revisar si _componentes cambió.")
+            self.assertEqual(anclas[nivel]["value_COP"], esperado,
+                             f"Nivel {nivel}: value_COP todavía incluye el componente "
+                             f"reputacional o no se actualizó.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

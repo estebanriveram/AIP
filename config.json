@@ -587,9 +587,10 @@
   "risk_matrix": {
     "_nota": "Anclas calibradas con eventos reales EPM. Revisión anual con Gestión del Riesgo EPM.",
     "consequence_levels": {
+      "_nota_reputacion": "value_COP ya NO incluye reputacional_COP desde que Reputación se elevó a VD-6 (Reto propio) — se conserva reputacional_COP en _componentes solo como registro histórico de la calibración v3.0. Sumarlo de nuevo a value_COP duplicaría el aporte reputacional frente a VD-6.",
       "1": {
         "label": "Muy Menor",
-        "value_COP": 80000000,
+        "value_COP": 55000000,
         "_componentes": {
           "directo_COP": 50000000,
           "regulatorio_COP": 5000000,
@@ -603,7 +604,7 @@
       },
       "2": {
         "label": "Menor",
-        "value_COP": 400000000,
+        "value_COP": 250000000,
         "_componentes": {
           "directo_COP": 200000000,
           "regulatorio_COP": 50000000,
@@ -617,7 +618,7 @@
       },
       "3": {
         "label": "Moderado",
-        "value_COP": 2000000000,
+        "value_COP": 1300000000,
         "_componentes": {
           "directo_COP": 800000000,
           "regulatorio_COP": 500000000,
@@ -631,7 +632,7 @@
       },
       "4": {
         "label": "Mayor",
-        "value_COP": 12000000000,
+        "value_COP": 7000000000,
         "_componentes": {
           "directo_COP": 4000000000,
           "regulatorio_COP": 3000000000,
@@ -645,7 +646,7 @@
       },
       "5": {
         "label": "Catastrófico",
-        "value_COP": 50000000000,
+        "value_COP": 25000000000,
         "_componentes": {
           "directo_COP": 15000000000,
           "regulatorio_COP": 10000000000,
@@ -807,7 +808,7 @@
           },
           "_calibracion": "20% ingreso regulado anual × factor exposición reputacional",
           "deprecated": true,
-          "deprecated_reason": "El riesgo reputacional está ahora incorporado en las anclas L1-L5 de la matriz de consecuencias (metodología Copperleaf C55). Usar VD-1-F Y la matriz de riesgos sería doble conteo. Conservado para trazabilidad de evaluaciones históricas.",
+          "deprecated_reason": "Contenido trasladado a VD-6-A (Reto Reputación, agregado por EPM). Usar VD-1-F junto con VD-6-A duplicaría el aporte reputacional dentro de los value drivers. Ya NO es sobre la matriz de riesgo — el componente reputacional se retiró de las anclas L1-L5 al mismo tiempo que se creó VD-6. Conservado para trazabilidad de evaluaciones históricas anteriores a este cambio.",
           "deprecated_since": "config_v3.0.0"
         }
       ]
@@ -977,6 +978,32 @@
           },
           "_calibracion": "Base activos por negocio × 5pp mejora máxima benchmark CREG",
           "_nota_reclasificacion": "Mantenido como Concept Rating. Aplica a proyectos de Growth con impacto en rentabilidad de la base de activos regulados. Es un beneficio estratégico sin precio de mercado directo — único caso válido de CR en el modelo (no es riesgo)."
+        }
+      ]
+    },
+    {
+      "id": "VD-6",
+      "reto": "Reputación",
+      "weight": 1.0,
+      "sub_criteria": [
+        {
+          "id": "VD-6-A",
+          "label": "Reputación EPM (NPS + CX + imagen)",
+          "type": "concept_rating",
+          "weight": 1.0,
+          "value_function": "s_curve",
+          "vf_inflection": 5.0,
+          "vf_steepness": 1.5,
+          "scale_max_COP": 320000000000,
+          "scale_max_by_bu": {
+            "TyD": 280000000000,
+            "AyA": 320000000000,
+            "Generacion": 380000000000,
+            "Gas": 180000000000,
+            "Todos": 420000000000
+          },
+          "_fuente": "Reactivado de VD-1-F (retirado en config_v3.0.0). Calibración original conservada sin cambios: 20% ingreso regulado anual × factor exposición reputacional.",
+          "_nota": "Reto agregado por EPM sin definición propia — uniforme para los 4 negocios, metodología heredada de VD-1-F/Copperleaf VDM. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-11 para la distinción metodológica frente a la fuente Copperleaf (que documenta reputación como categoría de riesgo, no como Modelo de Valor)."
         }
       ]
     }

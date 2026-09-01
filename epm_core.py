@@ -3649,9 +3649,13 @@ class ValueEngine:
         if benefit_start_offsets is None:
             benefit_start_offsets = {}
 
-        # Sub-criterios retirados: la reputación ya está colapsada en
-        # las anclas L1-L5 (value_COP = directo + regulatorio + reputacional).
-        # Usar VD-1-F duplica el componente reputacional. El motor lo bloquea.
+        # Sub-criterios retirados: VD-1-F medía reputación dentro de VD-1;
+        # su contenido se trasladó a VD-6 (Reto Reputación, agregado por
+        # EPM). Usar VD-1-F duplicaría el aporte reputacional frente a
+        # VD-6-A. El motor lo bloquea. Nota: ya NO es sobre la matriz de
+        # riesgo — el componente reputacional se retiró de las anclas
+        # L1-L5 al crear VD-6, así que esa duplicación específica ya no
+        # aplica; la que sí aplica es VD-1-F vs. VD-6-A.
         _DEPRECATED_SC = {"VD-1-F"}
 
         sc_values = {}
