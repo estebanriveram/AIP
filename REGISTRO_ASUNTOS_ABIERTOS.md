@@ -804,6 +804,98 @@ trabajo.
 
 ---
 
+### D-11 · Reto 6 — Reputación (VD-6)
+
+EPM ajustó el marco de valor y agregó un sexto Reto, Reputación, uniforme
+para los 4 negocios, sin definición propia — la metodología de cálculo
+sigue siendo la de los referentes (Copperleaf/VDM). Verificado contra la
+fuente antes de calibrar nada: **Copperleaf documenta la reputación como
+categoría de RIESGO** (DOC-RISK §3.3, *"Assets can carry multiple types of
+risk (e.g. reliability, safety, environmental, reputation, etc.)"*), no
+como Modelo de Valor positivo — el diseño anterior de EPM (reputación
+colapsada en las anclas L1-L5 de la matriz de riesgo, vía VD-1-F, retirado
+en `config_v3.0.0`) era, en ese sentido, más fiel a la fuente que el Reto
+6 nuevo. El usuario decidió explícitamente seguir adelante de todas
+formas, entendiendo que VD-6 es una construcción propia de EPM, no algo
+que Copperleaf documente — decisión tomada con la información completa,
+no en silencio.
+
+**Diseño:** VD-6-A reactiva la calibración de VD-1-F (`concept_rating`,
+curva-S, `scale_max_by_bu` ya calibrado para los 5 alcances) sin inventar
+números nuevos. VD-1-F se conserva deprecado (no se borra, conserva
+trazabilidad de evaluaciones históricas), con su `deprecated_reason`
+actualizado: ya no es sobre la matriz de riesgo, es sobre duplicar VD-6-A.
+
+**El hallazgo que cambió el alcance real del trabajo — verificado, no
+supuesto:** la revisión de calidad encontró que `config.json` nunca
+definía `risk_matrix.consequence_levels_by_bu` — la tabla que el motor
+**realmente** resuelve para TyD/Generación/AyA/Gas (jerarquía documentada:
+`consequence_levels_by_bu[BU] > consequence_levels > respaldo`). La
+primera corrección de este trabajo solo tocó la tabla plana genérica
+(`consequence_levels`), que casi ningún proyecto real usa — para los 4
+negocios reales, el motor seguía cayendo en silencio al respaldo embebido
+en `DEFAULT_CONFIG` (`epm_core.py`), que todavía incluía el componente
+reputacional. La doble contabilización que este trabajo existe para
+cerrar seguía viva para el caso real hasta corregir esto.
+
+Esa tabla nunca guardó desglose propio directo/regulatorio/reputacional
+(a diferencia de la plana), así que no había un número real que restar.
+Se aplicó como **estimación explícita** la misma proporción reputacional
+por nivel que ya existe en la tabla plana — marcada en cada entrada como
+pendiente de validar con Gestión del Riesgo EPM, no como calibración
+firme. Se sincronizó `DEFAULT_CONFIG` (respaldo embebido) con los mismos
+números, y se agregó VD-6-A a `INVESTMENT_TYPES`/al ciclo de rezago de
+beneficios del asistente interactivo (`ProjectWizard`) — sin eso, VD-6-A
+existía en el motor pero era inalcanzable desde la herramienta que el
+usuario realmente usa para capturar datos.
+
+**El error propio, encontrado por la propia revisión de calidad — se
+documenta con la misma honestidad que los anteriores.** Al reducir el
+riesgo mitigado por negocio, dos pruebas preexistentes del grupo S21
+(el más sensible del proyecto — existe para atrapar el defecto histórico
+de 26-33x donde el riesgo crecía más rápido que el descuento) empezaron a
+fallar. Diagnóstico sistemático confirmó que el mecanismo real **no era**
+ese defecto histórico (ΔR decrecía con el diferimiento, no crecía) sino
+que el CAPEX a valor presente se abarata con el tiempo (inflación de obra
+< WACC, propiedad preexistente del motor) más rápido de lo que decrecían
+beneficios y el riesgo ya reducido, para 2 de 4 negocios en el escenario
+sintético de la prueba. **Primer intento de corrección** (subir la
+severidad de riesgo base de la prueba en vez de tocar CAPEX/beneficio):
+restauraba las dos aserciones, pero la revisión de calidad reintrodujo
+deliberadamente el defecto histórico (sumar de vuelta la exposición
+descontada en `_calc_risk`) y encontró que, con esa corrección, **ningún
+negocio detectaba el defecto** — la prueba pasaba sin vigilar nada. Se
+corrigió reduciendo CAPEX y beneficio en su lugar (severidad de riesgo sin
+tocar), verificado con el mismo arnés de reintroducción: el defecto vuelve
+a detectarse en 2 negocios. Se agregó una meta-prueba permanente
+(`test_grupo_detecta_el_defecto_historico_si_se_reintroduce`) que
+reintroduce el defecto y falla si ningún negocio lo atrapa — para que una
+futura recalibración de este escenario no pueda repetir el mismo error en
+silencio.
+
+**Hallazgo estructural, van dos veces:** esta es la segunda vez en esta
+misma sesión que una desincronización entre `config.json` y su respaldo
+embebido en Python (`DEFAULT_CONFIG`) produce un defecto real (la primera
+fue con `capex_by_year`/R12 en D-9). Se agregó una prueba
+(`test_default_config_sincronizado_con_config_json_para_reto_6`) que
+compara ambas copias directamente para las estructuras que este trabajo
+toca — no resuelve el problema de fondo (dos copias paralelas de la
+misma configuración), pero evita que la próxima desincronización pase en
+silencio en esta área específica. El diseño de dos copias paralelas queda
+como deuda estructural, no resuelta aquí.
+
+**Vigilado por el grupo S25** (las pruebas de VD-6/VD-1-F ya vivían ahí,
+no en `S1_ValueEngine` como se planeó originalmente) y por el grupo S21
+ampliado con la meta-prueba. Suite: 265 → 271 pruebas (+6).
+
+**Hallazgo registrado, no corregido:** `_preselect_by_eav` (D-10) no tiene
+noción de proyectos EN CURSO más allá de `is_committed` — sigue abierto,
+sin relación directa con Reto 6, mencionado aquí solo porque ambos tocan
+la misma pregunta de fondo (¿cuándo un valor calculado por el motor no
+debería competir contra otro?).
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -845,6 +937,11 @@ trabajo.
 | D-10 NC-12 `_preselect_by_eav` no protegía Gasto Comprometido | Suite, grupo S32 | **Cerrado** |
 | D-10 NC-13 R3d/Restricción 5 sin ejercitarse en la práctica | Suite, grupo S32 (cobertura restaurada) | **Cerrado** |
 | D-10 `_preselect_by_eav` sin noción de proyectos EN CURSO/ETC (más allá de `is_committed`) | `_preselect_by_eav`, `EVMEngine` | **Abierto — decisión de diseño** |
+| D-11 VD-6 Reputación — brecha real de doble conteo (`consequence_levels_by_bu` ausente) | Suite, grupo S25 | **Cerrado** |
+| D-11 Recalibración de S21 que dejó de detectar el defecto histórico (error propio, corregido) | Suite, grupo S21 (meta-prueba nueva) | **Cerrado** |
+| D-11 `config.json`/`DEFAULT_CONFIG` desincronizados — segunda vez | Suite, grupo S25 (prueba de sincronía) | **Cerrado para Reto 6 · deuda estructural abierta** |
+| D-11 `consequence_levels_by_bu` sin desglose reputacional propio — estimación aplicada | `config.json → risk_matrix.consequence_levels_by_bu[*]._estimado_reputacion` | **Abierto — pendiente validar con Gestión del Riesgo EPM** |
+| D-11 VD-6 es una decisión de EPM, no algo que Copperleaf documente | DOC-RISK §3.3 | Documentado, decisión consciente del usuario |
 
 ---
 

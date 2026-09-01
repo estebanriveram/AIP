@@ -2105,23 +2105,39 @@ class S21_TratamientoTemporal(unittest.TestCase):
         return ValueEngine(_cfg())
 
     def _proyecto(self, bu):
-        # Riesgo base subido de (3,3,1,1) a (4,4,1,1) tras Reto 6 (VD-6,
-        # D-11): al corregir la doble contabilización de reputación, el
-        # riesgo mitigado (ΔR) de los 4 negocios se redujo — parte de su
-        # magnitud anterior era, precisamente, la duplicación que se
-        # retiró. Con (3,3,1,1) y este CAPEX/beneficio, el diferimiento se
-        # volvía "gratis" para 2 de 4 negocios: no por el defecto
-        # histórico que este grupo vigila (verificado — ΔR decrece con el
-        # diferimiento, no crece más rápido que el descuento), sino porque
-        # el CAPEX a valor presente se abarata con el tiempo (inflación de
-        # obra < WACC, propiedad preexistente del motor) más rápido de lo
-        # que decrecían los beneficios y el ΔR ya reducido. Subir la
-        # severidad de riesgo base restaura el margen sin tocar la
-        # calibración de Reto 6 ni el mecanismo del motor.
+        # CAPEX bajado de 8.000M a 5.000M y delta de 200 a 150 tras Reto 6
+        # (VD-6, D-11): al corregir la doble contabilización de
+        # reputación, el riesgo mitigado (ΔR) de los 4 negocios se redujo
+        # — parte de su magnitud anterior era, precisamente, la
+        # duplicación que se retiró.
+        #
+        # Primer intento de corrección (subir la severidad de riesgo base
+        # de (3,3,1,1) a (4,4,1,1), manteniendo CAPEX/delta): restauraba
+        # las dos aserciones, pero la revisión de calidad encontró que
+        # dejaba de detectar el defecto real que este grupo vigila —
+        # verificado reintroduciendo deliberadamente el defecto histórico
+        # (sumar de vuelta deferral_exposure_COP en vez de restarlo en
+        # _calc_risk) y confirmando que, con esa severidad, NINGÚN negocio
+        # pasaba de "no monótono" a "monótono creciente": el VNT quedaba
+        # tan dominado por el riesgo mitigado que el efecto de que el
+        # CAPEX se abarata con el tiempo (inflación de obra < WACC,
+        # propiedad preexistente del motor) ya no podía inclinar la
+        # balanza en ningún sentido — la prueba pasaba, pero sin vigilar
+        # nada.
+        #
+        # Corregido con este ajuste: severidad de riesgo SIN TOCAR
+        # (3,3,1,1, la original), CAPEX y beneficio reducidos en su lugar.
+        # Verificado con el mismo arnés de reintroducción del defecto:
+        # TyD y Generación (VNT positivo) siguen decreciendo correctamente
+        # con el diferimiento; AyA y Gas (VNT negativo) dejan de ser
+        # monótonos como antes — y, reintroduciendo el defecto histórico,
+        # AyA y Gas SÍ pasan a monótono creciente, confirmando que la
+        # prueba sigue detectando el defecto real, no solo evitando las
+        # dos aserciones que fallaban.
         return _make_project(
-            pid=f"DIF-{bu}", bu=bu, capex=8_000_000_000,
-            drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=200.0)])],
-            risk=_make_risk(4, 4, 1, 1), construction_years=1)
+            pid=f"DIF-{bu}", bu=bu, capex=5_000_000_000,
+            drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=150.0)])],
+            risk=_make_risk(3, 3, 1, 1), construction_years=1)
 
     # ── El invariante central ────────────────────────────────────────────────
 
@@ -2139,6 +2155,47 @@ class S21_TratamientoTemporal(unittest.TestCase):
                 creciente,
                 f"{bu}: el VNT crece de forma monotona con el diferimiento "
                 f"({vs[0]/1e9:.2f}B -> {vs[-1]/1e9:.2f}B). Diferir esta saliendo gratis.")
+
+    def test_grupo_detecta_el_defecto_historico_si_se_reintroduce(self):
+        """Meta-prueba: si alguien reintroduce el defecto original (no
+        restar deferral_exposure_COP en _calc_risk — el riesgo crece por
+        (1+g)^d sin que nadie cobre la exposición sufrida durante la
+        espera), al menos un negocio debe pasar de 'no monótono' a
+        'monótono creciente'.
+
+        Existe porque ya pasó una vez: una recalibración de este mismo
+        escenario (severidad de riesgo subida en vez de CAPEX/beneficio
+        bajados) dejaba pasar las otras dos pruebas de este grupo sin que
+        ningún negocio siguiera siendo sensible al defecto real — el VNT
+        quedaba tan dominado por el riesgo mitigado que el efecto de que
+        el CAPEX se abarata con el tiempo ya no podía inclinar la balanza
+        en ningún sentido. Si esta prueba falla, las otras dos pueden
+        seguir en verde sin que el grupo esté vigilando nada."""
+        import unittest.mock as _mock
+
+        orig_calc_risk = ValueEngine._calc_risk
+
+        def _con_defecto_reintroducido(self, *args, **kwargs):
+            r = dict(orig_calc_risk(self, *args, **kwargs))
+            r["delta_r_npv_COP"] = r["delta_r_npv_COP"] + r.get("deferral_exposure_COP", 0.0)
+            return r
+
+        detecto_algun_negocio = False
+        with _mock.patch.object(ValueEngine, "_calc_risk", _con_defecto_reintroducido):
+            eng = self._eng()
+            for bu in self.BUS:
+                vs = [eng.evaluate(self._proyecto(bu), deferral_years=d)["net_value_COP"]
+                      for d in range(0, 13)]
+                creciente = all(vs[i] <= vs[i + 1] for i in range(len(vs) - 1))
+                if creciente:
+                    detecto_algun_negocio = True
+
+        self.assertTrue(
+            detecto_algun_negocio,
+            "Con el defecto histórico reintroducido (deferral_exposure_COP "
+            "sin restar), ningún negocio pasó a monótono creciente — este "
+            "grupo ya no detecta el defecto que existe para vigilar.",
+        )
 
     def test_borde_de_ventana_no_es_el_optimo(self):
         """Diferir al maximo no puede ganarle al ano 0 si el proyecto crea valor.
@@ -3059,6 +3116,35 @@ class S25_FuncionDeValor(unittest.TestCase):
                         f"incluido, o consequence_levels_by_bu no existe en config.json "
                         f"y el motor está cayendo al respaldo desactualizado.",
                 )
+
+    def test_default_config_sincronizado_con_config_json_para_reto_6(self):
+        """DEFAULT_CONFIG (el respaldo embebido en epm_core.py) y
+        config.json deben coincidir en consequence_levels_by_bu y en la
+        entrada VD-6 — ya nos mordió una vez que estuvieran desincronizados
+        (config.json nunca definía consequence_levels_by_bu, así que el
+        motor caía en silencio al respaldo desactualizado con el
+        componente reputacional todavía adentro). Esta prueba no evita que
+        alguien edite un solo archivo por descuido, pero sí lo hace fallar
+        cuando ocurra, en vez de quedar en silencio como la vez anterior."""
+        with open("config.json", encoding="utf-8") as f:
+            cfg_json = json.load(f)
+
+        tabla_json = cfg_json["risk_matrix"]["consequence_levels_by_bu"]
+        tabla_default = DEFAULT_CONFIG["risk_matrix"]["consequence_levels_by_bu"]
+        for bu in ("TyD", "Generacion", "AyA", "Gas"):
+            for nivel in ("1", "2", "3", "4", "5"):
+                self.assertAlmostEqual(
+                    tabla_json[bu][nivel]["value_COP"],
+                    tabla_default[bu][nivel]["value_COP"],
+                    delta=1.0,
+                    msg=f"consequence_levels_by_bu[{bu}][{nivel}] difiere entre "
+                        f"config.json y DEFAULT_CONFIG — alguno quedó desactualizado.",
+                )
+
+        ids_json = {d["id"] for d in cfg_json["value_drivers"]}
+        ids_default = {d["id"] for d in DEFAULT_CONFIG["value_drivers"]}
+        self.assertIn("VD-6", ids_json, "VD-6 no existe en config.json")
+        self.assertIn("VD-6", ids_default, "VD-6 no existe en DEFAULT_CONFIG — el respaldo quedó desactualizado")
 
     def test_vd6_alcanzable_desde_investment_types(self):
         """VD-6-A debe aparecer como sugerido en todos los tipos de
