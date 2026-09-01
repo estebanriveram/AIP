@@ -709,6 +709,68 @@ fuera de ese alcance por ser de menor severidad inmediata:
 
 ---
 
+### D-10 · Preselección de alternativas por Valor Anual Equivalente — cierra la brecha 3 del spec de CAPEX/EAV
+
+El motor ya calculaba el Valor Anual Equivalente (`calc_eav()`) precisamente
+para evitar que una alternativa de vida larga "ganara injustamente por
+acumulación" frente a una de vida corta — así lo dice el propio comentario
+del código, escrito antes de esta sesión. Pero el punto donde efectivamente
+se decidía cuál alternativa de un `exclusion_group_id` competía por
+presupuesto en ambos optimizadores MILP comparaba `net_value_COP` crudo, no
+EAV. El EAV se calculaba, se reportaba, pero no decidía nada.
+
+**Corregido:** una función independiente, `_preselect_by_eav(projects, engine)`,
+reduce cada grupo de exclusión a una sola alternativa — la de mayor EAV, o
+la obligatoria si hay una — antes de que cualquiera de los dos optimizadores
+construya sus matrices. Las descartadas no desaparecen: se reportan en
+`postponed` con la razón explícita ("Descartada por EAV frente a X"), sin
+importar si el solver tiene éxito o falla.
+
+**Nota de método.** El propio proceso de escribir el plan de este trabajo
+tenía un defecto: la prueba decisiva original comparaba dos alternativas sin
+`asset_type` distinto, así que ambas caían en el mismo horizonte por
+defecto — y con horizonte idéntico, EAV es una transformación monótona de
+VNT que nunca puede invertir su orden. La premisa del caso era matemáticamente
+irrealizable tal como estaba escrita. El subagente implementador lo encontró
+en la primera ronda y lo corrigió (activos TyD reales, con vidas útiles
+distintas), verificado independientemente por dos revisiones que recalcularon
+el escenario a mano contra el motor real. Un segundo hallazgo similar: la
+primera versión de la prueba de conexión a `PortfolioOptimizer` pedía que la
+descartada por EAV no apareciera en ninguna lista de resultado — contradecía
+directamente la sección 6 del spec ("no desaparecen en silencio, se reportan
+con la razón"), un error de redacción del propio plan, no del código. Y, como
+ya había pasado en D-9 con R1/R12, el primer intento de conectar el reporte
+de descartadas en ambos optimizadores lo dejó dentro del bloque que solo se
+ejecuta si el solver tiene éxito — un solve infactible las hacía desaparecer
+en silencio. Corregido en los dos optimizadores tras la revisión de calidad
+de cada uno; la segunda vez (`EnterpriseOptimizer`) se aplicó proactivamente
+la lección de la primera, sin que hiciera falta descubrirla de nuevo.
+
+**Vigilado por el grupo S32**, con campaña de mutación dedicada: 6
+mutaciones cubriendo la comparación por EAV, la precedencia de lo
+obligatorio, la conexión a ambos optimizadores y la visibilidad de
+descartadas bajo solve infactible en ambos. Primera y única corrida: **6/6
+mueren** — ninguna prueba necesitó fortalecerse. Suite: 253 → 262 pruebas
+(+9, partiendo del estado ya cerrado por D-9).
+
+**Hallazgo registrado, no corregido en este trabajo:** `_preselect_by_eav`
+no tiene ninguna noción de Gasto Comprometido / Continuous Planning
+(`actuals`, `pct_complete`, ETC). Si dos alternativas del mismo grupo
+compiten y una ya tiene avance real, la preselección puede descartarla solo
+por EAV proyectado — no necesariamente incorrecto (el costo hundido no
+debería determinar la decisión futura, en teoría clásica de presupuesto de
+capital), pero la razón reportada ("Descartada por EAV frente a X") no
+distingue "perdió por economía" de "ya se había ejecutado", y la duda real
+de fondo es si `evaluate()` valora esa alternativa por su CAPEX total
+original o por el ETC restante que ya calcula `EVMEngine` — si es el total,
+la comparación no es de igual a igual. `PortfolioOptimizer` nunca expuso
+este caso (no tiene parámetro de `actuals`); este trabajo conecta la
+preselección a `EnterpriseOptimizer`, que sí, por primera vez. Resolverlo
+exige entender la interacción completa con la lógica de ETC — fuera de
+alcance de este trabajo.
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -746,6 +808,8 @@ fuera de ese alcance por ser de menor severidad inmediata:
 | D-9 NC-11 `deferral_years` con referencia distinta entre optimizadores | Medido: ~39 % de diferencia de VNT | **Cerrado** |
 | D-9 Incentivo a diferir al borde del horizonte | Mismo espíritu que NC-2 (D-8) | **Abierto — decisión de diseño** |
 | D-9 Gasto Comprometido y reporte por vigencia, mismo patrón | `_capex_committed`, `print_portfolio_report` | **Abierto — menor severidad** |
+| D-10 EAV calculado pero sin decidir nada (brecha 3 del spec CAPEX/EAV) | Suite, grupo S32 (6 mutantes) | **Cerrado** |
+| D-10 `_preselect_by_eav` sin noción de Gasto Comprometido/ETC | `_preselect_by_eav`, `EVMEngine` | **Abierto — decisión de diseño** |
 
 ---
 
@@ -764,8 +828,9 @@ fuera de ese alcance por ser de menor severidad inmediata:
 | S29 | Proporcionalidad y métricas — EAV, VEI, VEI_EAV, matriz de riesgo, persona-mes | 11 | 11 |
 | S30 | Año óptimo — CAPEX a valor presente, rezago de obra una sola vez, coherencia entre las dos puertas | 8 | 8 |
 | S31 | Perfil de CAPEX por año — valoración vía `deferral_years`, reanclaje bajo escaneo, R1/R12/reporte de `EnterpriseOptimizer`, matriz relativa y reporte de `PortfolioOptimizer` (primera cobertura de ese optimizador) | 12 | 12 |
+| S32 | Preselección por EAV — gana la alternativa de mayor Valor Anual Equivalente dentro de cada grupo de exclusión, salvo obligatoriedad, en ambos optimizadores, visible aunque el solver falle | 6 | 6 |
 
-La disciplina es la misma en los diez grupos: **no basta con probar que el
+La disciplina es la misma en los once grupos: **no basta con probar que el
 código no falla, hay que reproducir el valor con un cálculo independiente**.
 Un mutante que sobrevive es un camino por el que una implementación
 equivocada aprobaría la entrega. Total: 111/111 mutantes probados mueren.
