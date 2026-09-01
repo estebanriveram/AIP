@@ -38,6 +38,7 @@ PROJECT_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 # ── Import del motor ──────────────────────────────────────────────────────────
+import epm_core
 from epm_core import (
     DEFAULT_CONFIG,
     ProjectInput, CostInput, DriverInput, SubCriterionInput, RiskInput,
@@ -4405,6 +4406,80 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
         ganadores, descartados = _preselect_by_eav([p], self.engine)
         self.assertEqual({p.id for p in ganadores}, {"UNICA"})
         self.assertEqual(descartados, [])
+
+    def test_preseleccion_respeta_comprometida_aunque_tenga_menor_eav(self):
+        """Gasto Comprometido (contrato ya firmado) pesa más que el EAV,
+        igual que lo obligatorio."""
+        comprometida = _make_project(
+            pid="ALT_COMPROMETIDA", capex=50_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_COMP", is_committed=True,
+        )
+        mejor_eav = _make_project(
+            pid="ALT_MEJOR_EAV_2", capex=8_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_COMP",
+        )
+        ganadores, descartados = _preselect_by_eav([comprometida, mejor_eav], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_COMPROMETIDA"})
+
+    def test_preseleccion_comprometida_y_obligatoria_en_el_mismo_grupo_falla(self):
+        """Una comprometida y una obligatoria compitiendo en el mismo grupo
+        son dos protecciones distintas reclamando la misma necesidad — error
+        de captura, no un caso a resolver en silencio."""
+        obligatoria = _make_project(pid="OBL", exclusion_group_id="ZZ", is_mandatory=True)
+        comprometida = _make_project(pid="COMP", exclusion_group_id="ZZ", is_committed=True)
+        with self.assertRaises(ValueError):
+            _preselect_by_eav([obligatoria, comprometida], self.engine)
+
+    def test_r3d_sigue_activo_si_se_desactiva_la_preseleccion(self):
+        """La preselección por EAV ahora reduce cada grupo a <=1 ANTES de
+        que el MILP corra, así que su propia restricción de exclusión de
+        grupo (R3d / Restricción 5) nunca se ejercita en la práctica — tres
+        pruebas preexistentes que decían vigilarla (S2, S20, S23) ahora
+        pasan por esa razón, no por la restricción MILP misma. Esta prueba
+        restaura cobertura real: desactiva la preselección (monkeypatch a
+        una función identidad que no descarta nada) y confirma que la
+        restricción del MILP, sola, sigue impidiendo que se seleccione más
+        de una alternativa del mismo grupo."""
+        import unittest.mock as _mock
+
+        def _identidad(projects, engine):
+            return list(projects), []
+
+        # Ambas alternativas deben tener VNT fuertemente positivo (~5.500 MM
+        # y ~5.300 MM COP, verificado): el optimizador las QUIERE a ambas, no
+        # hay que forzarlo. Si no fuera así, "a lo sumo 1 seleccionado" sería
+        # trivialmente cierto por falta de presupuesto/atractivo y no
+        # probaría que la restricción de grupo es la que está actuando —
+        # verificado empíricamente desactivando temporalmente la restricción
+        # de grupo del MILP: sin ella el solver selecciona AMBAS (2), con
+        # ella exactamente 1.
+        sc_a = _make_sc("VD-1-A", delta=2000.0, price=335_000)
+        alt_a = _make_project(
+            pid="R3D_A", capex=500_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_a])],
+            exclusion_group_id="NECESIDAD_R3D",
+        )
+        alt_a.asset_type = "_default"
+        sc_b = _make_sc("VD-1-A", delta=1900.0, price=335_000)
+        alt_b = _make_project(
+            pid="R3D_B", capex=450_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_b])],
+            exclusion_group_id="NECESIDAD_R3D",
+        )
+        alt_b.asset_type = "_default"
+        periods_simple = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
+        with _mock.patch.object(epm_core, "_preselect_by_eav", side_effect=_identidad):
+            opt = PortfolioOptimizer(config=self.cfg)
+            result = opt.optimize([alt_a, alt_b], periods_simple, base_year=2026)
+        ids_seleccionados = [s["project_id"] for s in result.selected]
+        self.assertEqual(
+            len(ids_seleccionados), 1,
+            "Con la preselección desactivada y ambas alternativas de VNT "
+            "fuertemente positivo (el optimizador las quiere a ambas), la "
+            "restricción de exclusión de grupo del MILP (Restricción 5) debe "
+            "seguir permitiendo exactamente 1 de NECESIDAD_R3D — ni 0 ni 2.",
+        )
 
     def test_portfolio_simple_usa_preseleccion(self):
         """La alternativa descartada por EAV nunca debe llegar a competir
