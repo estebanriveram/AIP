@@ -446,6 +446,12 @@ a una sola alternativa por EAV antes de construir cualquier matriz del
 MILP."
 ```
 
+**Estado real de los commits:** `dbf7e89` (implementación) + un commit posterior que agrega la aserción `solver_status == "INFEASIBLE"` a la prueba de infactibilidad, encontrada faltante en la revisión de calidad.
+
+**Hallazgo registrado, no corregido en esta Task:** `_preselect_by_eav` (Task 1) no tiene ninguna noción de Gasto Comprometido / Continuous Planning (`actuals`, `pct_complete`, ETC). Si dos alternativas del mismo `exclusion_group_id` compiten y una ya tiene avance real (completada o en curso), la preselección puede descartarla solo por EAV proyectado, con una razón ("Descartada por EAV frente a X") que no distingue "perdió por economía" de "ya se había ejecutado". `PortfolioOptimizer` nunca expuso este caso (no tiene parámetro de `actuals`); `EnterpriseOptimizer` sí, y esta Task conecta la preselección ahí por primera vez.
+
+No es necesariamente un error de cálculo — en teoría de presupuesto de capital, el costo hundido no debería determinar la decisión futura, así que comparar por EAV proyectado puede ser económicamente correcto. La duda real es si `evaluate()` valora la alternativa en curso por su CAPEX **total** original o por el ETC (costo restante) que ya calcula `EVMEngine` para Continuous Planning — si es el total, la comparación no es de igual a igual frente a una alternativa que arranca de cero. Resolverlo exige entender la interacción completa con la lógica de ETC, fuera del alcance de este plan — queda como asunto abierto para el registro.
+
 ---
 
 ### Task 4: Campaña de mutación
