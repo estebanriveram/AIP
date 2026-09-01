@@ -753,21 +753,54 @@ descartadas bajo solve infactible en ambos. Primera y única corrida: **6/6
 mueren** — ninguna prueba necesitó fortalecerse. Suite: 253 → 262 pruebas
 (+9, partiendo del estado ya cerrado por D-9).
 
-**Hallazgo registrado, no corregido en este trabajo:** `_preselect_by_eav`
-no tiene ninguna noción de Gasto Comprometido / Continuous Planning
-(`actuals`, `pct_complete`, ETC). Si dos alternativas del mismo grupo
-compiten y una ya tiene avance real, la preselección puede descartarla solo
-por EAV proyectado — no necesariamente incorrecto (el costo hundido no
-debería determinar la decisión futura, en teoría clásica de presupuesto de
-capital), pero la razón reportada ("Descartada por EAV frente a X") no
-distingue "perdió por economía" de "ya se había ejecutado", y la duda real
-de fondo es si `evaluate()` valora esa alternativa por su CAPEX total
-original o por el ETC restante que ya calcula `EVMEngine` — si es el total,
-la comparación no es de igual a igual. `PortfolioOptimizer` nunca expuso
-este caso (no tiene parámetro de `actuals`); este trabajo conecta la
-preselección a `EnterpriseOptimizer`, que sí, por primera vez. Resolverlo
-exige entender la interacción completa con la lógica de ETC — fuera de
-alcance de este trabajo.
+**Hallazgos de la revisión final integral de todo el trabajo (no de ninguna
+Task individual) — dos corregidos, uno queda abierto:**
+
+**NC-12 · `_preselect_by_eav` no protegía Gasto Comprometido — CERRADO.**
+Solo `is_mandatory` pesaba más que el EAV. Un proyecto con contrato ya
+firmado (`is_committed`) podía descartarse por EAV antes de que la
+restricción R11 llegara a protegerlo — la misma clase de error que ya se
+había corregido para `is_mandatory`, con el agravante de que hay un
+contrato de por medio. Corregido: "protegida" ahora es `is_mandatory` **o**
+`is_committed`; dos protegidas en el mismo grupo (por cualquier combinación
+de las dos banderas) sigue siendo el mismo error de conflicto.
+
+**NC-13 · R3d/Restricción 5 dejaron de ejercitarse en la práctica — CERRADO
+(cobertura restaurada, no un cambio de comportamiento).** Como
+`_preselect_by_eav` corre sin condiciones antes de que cualquiera de los
+dos optimizadores construya sus matrices, cada grupo de exclusión ya llega
+reducido a como máximo una alternativa antes de que la restricción propia
+del MILP (R3d en `EnterpriseOptimizer`, "Restricción 5" en
+`PortfolioOptimizer`) tenga oportunidad de actuar. Verificado
+empíricamente: desactivando ambas restricciones por completo, la suite
+completa seguía en verde — tres pruebas preexistentes que decían vigilarlas
+(`test_r3d_group_exclusion`, la aserción de grupo dentro de
+`test_full_integration`, `test_r3d_exclusion_de_grupo_deja_pasar_exactamente_uno`)
+habían perdido su poder de detección sin que nada lo notara. No es un
+defecto de comportamiento — la salida del motor sigue siendo correcta,
+R3d/Restricción 5 ahora son defensa en profundidad genuina, tal como el
+spec ya decía que debían quedar. Corregido: una prueba nueva desactiva la
+preselección por monkeypatch y confirma que la restricción del MILP, sola,
+sigue impidiendo más de una selección por grupo; las tres pruebas
+preexistentes quedan anotadas señalando por qué pasan y cuál prueba las
+reemplaza como guardián real.
+
+**Hallazgo registrado, no corregido — interacción con Gasto Comprometido y
+ETC.** `_preselect_by_eav` sigue sin ninguna noción de Continuous Planning
+(`actuals`, `pct_complete`, ETC) más allá de la protección de `is_committed`
+que sí se agregó (NC-12) — esa protección cubre el caso "ya hay contrato
+firmado", pero no el caso más amplio de un proyecto EN CURSO (`pct_complete`
+entre 0 y 1, sin `is_committed`) que compita en un grupo de exclusión: la
+preselección puede descartarlo solo por EAV proyectado — no necesariamente
+incorrecto (el costo hundido no debería determinar la decisión futura, en
+teoría clásica de presupuesto de capital), pero la duda real de fondo es si
+`evaluate()` valora esa alternativa por su CAPEX total original o por el
+ETC restante que ya calcula `EVMEngine` — si es el total, la comparación no
+es de igual a igual. `PortfolioOptimizer` nunca expuso este caso (no tiene
+parámetro de `actuals`); este trabajo conecta la preselección a
+`EnterpriseOptimizer`, que sí, por primera vez. Resolverlo exige entender la
+interacción completa con la lógica de ETC — fuera de alcance de este
+trabajo.
 
 ---
 
@@ -809,7 +842,9 @@ alcance de este trabajo.
 | D-9 Incentivo a diferir al borde del horizonte | Mismo espíritu que NC-2 (D-8) | **Abierto — decisión de diseño** |
 | D-9 Gasto Comprometido y reporte por vigencia, mismo patrón | `_capex_committed`, `print_portfolio_report` | **Abierto — menor severidad** |
 | D-10 EAV calculado pero sin decidir nada (brecha 3 del spec CAPEX/EAV) | Suite, grupo S32 (6 mutantes) | **Cerrado** |
-| D-10 `_preselect_by_eav` sin noción de Gasto Comprometido/ETC | `_preselect_by_eav`, `EVMEngine` | **Abierto — decisión de diseño** |
+| D-10 NC-12 `_preselect_by_eav` no protegía Gasto Comprometido | Suite, grupo S32 | **Cerrado** |
+| D-10 NC-13 R3d/Restricción 5 sin ejercitarse en la práctica | Suite, grupo S32 (cobertura restaurada) | **Cerrado** |
+| D-10 `_preselect_by_eav` sin noción de proyectos EN CURSO/ETC (más allá de `is_committed`) | `_preselect_by_eav`, `EVMEngine` | **Abierto — decisión de diseño** |
 
 ---
 
