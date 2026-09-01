@@ -250,3 +250,16 @@ git commit -m "docs: registrar D-11 — Reto 6 Reputación"
 ## Fuera de alcance de este plan
 
 La "biblioteca de modelos de valor" (motor genérico de cuestionario + fórmula, al estilo Copperleaf Value Model Library) es un proyecto de arquitectura aparte, de tamaño comparable a los planes de perfil de CAPEX o preselección por EAV — no se diseña ni se toca aquí. VD-6 usa el arquetipo `concept_rating` que ya existe, sin necesitarla.
+
+---
+
+## Estado final — ejecutado, con alcance ampliado tres veces
+
+El detalle completo, incluido el error propio y su corrección, vive en `REGISTRO_ASUNTOS_ABIERTOS.md` D-11 — este resumen solo apunta ahí en vez de duplicar la narrativa.
+
+- **Task 1 original** (matriz de riesgo plana, VD-1-F, VD-6): commit `7ac9161`.
+- **Ampliación 1** (encontrada en revisión de calidad): `config.json` nunca definía `risk_matrix.consequence_levels_by_bu` — la tabla que el motor realmente resuelve para los 4 negocios reales. Se agregó, con el componente reputacional estimado (no calibrado directamente — pendiente validar con Gestión del Riesgo EPM), se sincronizó `DEFAULT_CONFIG`, y se hizo VD-6-A alcanzable desde `ProjectWizard`. Commit `446dd0d`.
+- **Ampliación 2** (encontrada en la misma revisión): la ampliación 1 rompió dos pruebas del grupo S21. Diagnóstico sistemático descartó el defecto histórico como causa. Commit `446dd0d` incluyó una primera corrección que, verificado por revisión de calidad posterior, dejaba de detectar ese mismo defecto histórico si se reintrodujera — un error propio, corregido en el commit `179f08c` reduciendo CAPEX/beneficio en vez de subir la severidad de riesgo, con dos guardianes permanentes nuevos (meta-prueba de detección del defecto, prueba de sincronía `config.json`/`DEFAULT_CONFIG`).
+- **Task 2** (registro D-11): incorporado en los commits de arriba, no como commit separado.
+
+Suite: 265 → 271 pruebas (+6). Sin campaña de mutación dedicada — el trabajo es mayormente configuración + guardianes verificados por reintroducción directa del defecto real, no un mecanismo nuevo del motor que amerite su propio script de mutación.
