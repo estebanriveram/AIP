@@ -217,42 +217,54 @@ pesando más que el EAV. Todavía sin conectar a ningún optimizador."
 - Modify: `epm_core.py:5481-5498` (inicio de `PortfolioOptimizer.optimize`)
 - Test: `test_suite_epm_full.py` (clase `S32_PreseleccionPorEAV`)
 
-- [ ] **Step 1: Escribir la prueba que falla**
+**Nota:** el Step 1 original de este Task pedía que la descartada por EAV no apareciera "en ninguna de las dos listas en absoluto" — contradice directamente la sección 6 del spec ("las alternativas descartadas no desaparecen: se reportan explícitamente con la razón"). Contradicción encontrada por el subagente implementador, que correctamente se detuvo en vez de resolverla por su cuenta — cambia el contrato público de `PortfolioResult.postponed` que la Task 3 replica para `EnterpriseOptimizer`. Corregido abajo: la prueba verifica las dos cosas que el spec sí pide — no compite por presupuesto, pero sí queda visible con la razón. También usa el mismo `asset_type`/`delta` calibrados del Task 1 (sin horizonte distinto, EAV no puede invertir el orden de VNT).
+
+- [x] **Step 1: Escribir la prueba que falla (versión corregida)**
 
 ```python
     def test_portfolio_simple_usa_preseleccion(self):
-        """El optimizador simple no debe llegar a considerar la alternativa
-        descartada por EAV como candidata — verificado indirectamente: si
-        ambas alternativas cupieran en presupuesto, solo la de mayor EAV
-        debe aparecer seleccionada o postergada; la otra no debe aparecer
-        en ninguna de las dos listas en absoluto."""
+        """La alternativa descartada por EAV nunca debe llegar a competir
+        por presupuesto (no debe aparecer en selected) — pero tampoco debe
+        desaparecer en silencio: debe aparecer en postponed con la razón
+        explícita (spec sección 6: 'no desaparecen en silencio, se reportan
+        con la razón')."""
         opt = PortfolioOptimizer(config=self.cfg)
-        sc_grande = _make_sc("VD-1-A", delta=100_000.0, price=335_000)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
         larga = _make_project(
             pid="OPT_LARGA", capex=50_000_000_000, exec_year=2026,
             drivers=[_make_driver("VD-1", [sc_grande])],
             exclusion_group_id="NECESIDAD_OPT",
         )
-        sc_chica = _make_sc("VD-1-A", delta=15_000.0, price=335_000)
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="OPT_CORTA", capex=8_000_000_000, exec_year=2026,
             drivers=[_make_driver("VD-1", [sc_chica])],
             exclusion_group_id="NECESIDAD_OPT",
         )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
         periods = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
-        todos_los_ids = (
-            {s["project_id"] for s in result.selected} |
-            {p["project_id"] for p in result.postponed}
-        )
+
+        ids_seleccionados = {s["project_id"] for s in result.selected}
         self.assertNotIn(
-            "OPT_LARGA", todos_los_ids,
+            "OPT_LARGA", ids_seleccionados,
             "La alternativa de mayor VNT crudo pero menor EAV no debía "
-            "llegar a construir matrices del MILP en absoluto.",
+            "llegar a competir por presupuesto en absoluto.",
         )
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "OPT_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe quedar visible en postponed, no "
+            "desaparecer en silencio (spec sección 6).",
+        )
+        self.assertIn("EAV", descartada["reason"])
+        self.assertIn("OPT_CORTA", descartada["reason"])
 ```
 
-- [ ] **Step 2: Confirmar que falla**
+- [x] **Step 2: Confirmar que falla**
 
 Run: `python -m unittest test_suite_epm_full.S32_PreseleccionPorEAV.test_portfolio_simple_usa_preseleccion -v`
 Expected: FALLA — `OPT_LARGA` aparece en `result.selected` (gana por presupuesto sobrado y VNT crudo mayor).
