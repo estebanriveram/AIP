@@ -7083,6 +7083,10 @@ class EnterpriseOptimizer:
                     f"Modo Silo: no hay proyectos para la BU '{bu_filter}'. "
                     "Verifica el portafolio cargado.")
 
+        # Preselección por EAV: reduce cada grupo de exclusión a una sola
+        # alternativa ANTES de construir cualquier matriz.
+        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)
+
         # ── Continuous Planning — clasificar actuals ────────────────
         # Referencia: RFI §5 fila 143 — planificación continua y re-optimización.
         # Tres estados posibles de cada proyecto con actuals:
@@ -7733,6 +7737,18 @@ class EnterpriseOptimizer:
                     })
 
         selected.sort(key=lambda r: r["net_value_COP"], reverse=True)
+
+        # Las descartadas por EAV se conocen ANTES de correr el solver — se
+        # reportan sin importar si este tuvo éxito o no (spec sección 6:
+        # "no desaparecen en silencio, se reportan con la razón").
+        for descartada, ganadora in _preselect_descartados:
+            postponed.append({
+                "project_id": descartada.id,
+                "project_name": descartada.name,
+                "reason": f"Descartada por EAV frente a {ganadora.id}",
+                "exclusion_group_id": getattr(descartada, "exclusion_group_id", None),
+                "asset_id": getattr(descartada, "asset_id", ""),
+            })
 
         # ── Utilización por vigencia ──────────────────────────────────────────
         budget_util, resource_util, risk_util = {}, {}, {}
