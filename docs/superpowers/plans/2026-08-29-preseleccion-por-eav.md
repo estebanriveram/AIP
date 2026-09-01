@@ -285,38 +285,85 @@ En `epm_core.py`, dentro de `PortfolioOptimizer.optimize`, inmediatamente despu�
         n_proj = len(projects)
 ```
 
-- [ ] **Step 4: Reportar las descartadas junto con las postergadas**
+- [x] **Step 4: Reportar las descartadas junto con las postergadas (corregido — ver nota)**
 
-En el mismo método, donde se construye `postponed` (busca `postponed.append(` dentro del bloque `if result.success:`), agregar, inmediatamente después de que termine ese bloque (antes del `return PortfolioResult(...)`):
+**Nota:** la primera versión de este Step ponía el bucle de descartadas DENTRO de `if result.success:`, igual que el bucle de "sin cupo". La revisión de calidad lo encontró: como `_preselect_descartados` se conoce ANTES de correr el solver, si este resulta infactible (`result.success == False`) el bloque completo se salta y las descartadas por EAV desaparecen en silencio — contradice la garantía de la sección 6 del spec. Corregido: el bucle de descartadas vive FUERA del `if result.success:`, al mismo nivel que el `return PortfolioResult(...)`.
+
+En el mismo método, donde se construye `postponed` (busca `postponed.append(` dentro del bloque `if result.success:` — ese bloque solo debe seguir teniendo el bucle de "Sin cupo presupuestal"), agregar, DESPUÉS de que termine ese bloque `if result.success:` (mismo nivel de indentación que el `if`, no dentro de él) y antes del `return PortfolioResult(...)`:
 
 ```python
-            for descartada, ganadora in _preselect_descartados:
-                postponed.append({
-                    "project_id": descartada.id,
-                    "project_name": descartada.name,
-                    "reason": f"Descartada por EAV frente a {ganadora.id}",
-                })
+        # Las descartadas por EAV se conocen ANTES de correr el solver — se
+        # reportan sin importar si este tuvo éxito o no. Si quedaran dentro
+        # del `if result.success:` de arriba, un solve infactible las haría
+        # desaparecer en silencio, contradiciendo la garantía de la sección
+        # 6 del spec ("no desaparecen en silencio, se reportan con la razón").
+        for descartada, ganadora in _preselect_descartados:
+            postponed.append({
+                "project_id": descartada.id,
+                "project_name": descartada.name,
+                "reason": f"Descartada por EAV frente a {ganadora.id}",
+            })
 ```
 
-- [ ] **Step 5: Confirmar que pasa**
+- [x] **Step 4b: Prueba de que las descartadas siguen visibles aunque el solver falle**
+
+Agregar a `S32_PreseleccionPorEAV`:
+
+```python
+    def test_portfolio_simple_descartada_por_eav_visible_aunque_infactible(self):
+        """Las descartadas por EAV deben reportarse en postponed incluso si
+        el solver resulta infactible (0 de presupuesto) — se conocen ANTES
+        de correr el solver, no dependen de que este tenga éxito."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="INF_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_INF",
+        )
+        larga.asset_type = "transformador_potencia"
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="INF_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_INF", is_mandatory=True,
+        )
+        corta.asset_type = "sistema_control_SCADA"
+        # Presupuesto 0: INF_CORTA (la ganadora por EAV, ahora obligatoria)
+        # no cabe en ningún lado — el solver debe reportar infactible.
+        # Nota: solo INF_CORTA es obligatoria — si ambas lo fueran,
+        # _preselect_by_eav lanzaría su propio ValueError de "dos
+        # obligatorias en el mismo grupo" antes de llegar al solver, que no
+        # es el escenario que esta prueba quiere ejercitar.
+        periods = [BudgetPeriod(year=2026, budget_COP=0.0)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+        self.assertEqual(result.solver_status, "INFEASIBLE")
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "INF_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe seguir visible en postponed aunque "
+            "el solver resulte infactible.",
+        )
+```
+
+- [x] **Step 5: Confirmar que pasa**
 
 Run: `python -m unittest test_suite_epm_full.S32_PreseleccionPorEAV -v`
-Expected: `OK` con 6 pruebas.
+Expected: `OK` con 7 pruebas.
 
-- [ ] **Step 6: Correr toda la suite**
+- [x] **Step 6: Correr toda la suite**
 
 Run: `python test_suite_epm_full.py`
 Expected: `OK` — la preselección es un no-op para cualquier proyecto sin `exclusion_group_id`, que es el caso de todas las pruebas existentes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commits**
 
-```bash
-git add epm_core.py test_suite_epm_full.py
-git commit -m "feat: PortfolioOptimizer aplica la preselección por EAV
-
-Las alternativas descartadas se reportan en 'postponed' con la razón
-explícita, igual que un proyecto sin cupo presupuestal — no desaparecen
-en silencio."
+```
+f9cd0f8  feat: PortfolioOptimizer aplica la preselección por EAV
+66dbc1d  docs: corregir contradicción entre Task 2 Step 1 y la sección 6 del spec
+551e17e  fix: descartadas por EAV visibles en postponed aunque el solver falle
 ```
 
 ---
