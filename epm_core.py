@@ -5515,6 +5515,64 @@ class PortfolioResult:
     config_version: str
 
 
+def _preselect_by_eav(projects: list, engine: "ValueEngine"):
+    """Para cada exclusion_group_id con más de una alternativa, se queda
+    solo la de mayor Valor Anual Equivalente — salvo que una de las
+    alternativas esté protegida (no-discrecional o con Gasto Comprometido
+    ya firmado), en cuyo caso esa gana sin importar su EAV. Sin esto, el
+    punto donde efectivamente se decide cuál alternativa de una necesidad
+    se ejecuta compara net_value_COP crudo, que favorece sistemáticamente
+    a la alternativa de vida más larga por pura acumulación — el EAV
+    existe precisamente para evitarlo, pero hasta ahora no decidía nada.
+
+    'Protegida' = is_mandatory O is_committed. Un proyecto con contrato ya
+    firmado (is_committed) fuerza su ejecución vía R11 sin importar la
+    optimización — descartarlo por EAV antes de que R11 llegue a
+    protegerlo sería exactamente el mismo error que ya se corrigió para
+    is_mandatory, con la agravante de que hay un contrato de por medio.
+
+    Devuelve (ganadores, descartados). `descartados` es una lista de
+    tuplas (proyecto_descartado, proyecto_ganador) — quien llame reporta
+    la razón en el formato que le convenga a su propio resultado.
+
+    No modifica exclusion_group_id ni ninguna otra restricción existente:
+    la unicidad de grupo (R3d) sigue vigente en ambos optimizadores como
+    salvaguarda, no se retira.
+    """
+    from collections import defaultdict as _dd
+    grupos: dict = _dd(list)
+    ganadores = []
+    for p in projects:
+        gid = getattr(p, "exclusion_group_id", None)
+        if gid:
+            grupos[gid].append(p)
+        else:
+            ganadores.append(p)
+
+    descartados = []
+    for gid, alternativas in grupos.items():
+        if len(alternativas) == 1:
+            ganadores.append(alternativas[0])
+            continue
+        protegidas = [p for p in alternativas if p.is_mandatory or getattr(p, "is_committed", False)]
+        if len(protegidas) > 1:
+            raise ValueError(
+                f"Grupo de exclusión '{gid}': hay {len(protegidas)} alternativas "
+                f"protegidas (no-discrecional o Gasto Comprometido) "
+                f"({', '.join(p.id for p in protegidas)}). "
+                f"Solo una alternativa del grupo puede ejecutarse — a lo sumo "
+                f"una puede estar protegida."
+            )
+        if protegidas:
+            ganador = protegidas[0]
+        else:
+            ganador = max(alternativas, key=lambda p: engine.evaluate(p)["eav_COP"])
+        ganadores.append(ganador)
+        descartados.extend((p, ganador) for p in alternativas if p is not ganador)
+
+    return ganadores, descartados
+
+
 class PortfolioOptimizer:
     """
     Optimizador MILP de portafolio multiperíodo.
@@ -5549,6 +5607,11 @@ class PortfolioOptimizer:
 
         if base_year is None:
             base_year = datetime.now().year
+
+        # Preselección por EAV: reduce cada grupo de exclusión a una sola
+        # alternativa ANTES de construir cualquier matriz — el resto del
+        # método nunca ve las alternativas descartadas.
+        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)
 
         n_proj = len(projects)
         n_years = len(budget_periods)
@@ -5757,6 +5820,18 @@ class PortfolioOptimizer:
                         "reason": "Sin cupo presupuestal en el horizonte"
                     })
             selected.sort(key=lambda x: x["net_value_COP"], reverse=True)
+
+        # Las descartadas por EAV se conocen ANTES de correr el solver — se
+        # reportan sin importar si este tuvo éxito o no. Si quedaran dentro
+        # del `if result.success:` de arriba, un solve infactible las haría
+        # desaparecer en silencio, contradiciendo la garantía de la sección
+        # 6 del spec ("no desaparecen en silencio, se reportan con la razón").
+        for descartada, ganadora in _preselect_descartados:
+            postponed.append({
+                "project_id": descartada.id,
+                "project_name": descartada.name,
+                "reason": f"Descartada por EAV frente a {ganadora.id}",
+            })
 
         return PortfolioResult(
             selected=selected,
@@ -7015,6 +7090,10 @@ class EnterpriseOptimizer:
                     f"Modo Silo: no hay proyectos para la BU '{bu_filter}'. "
                     "Verifica el portafolio cargado.")
 
+        # Preselección por EAV: reduce cada grupo de exclusión a una sola
+        # alternativa ANTES de construir cualquier matriz.
+        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)
+
         # ── Continuous Planning — clasificar actuals ────────────────
         # Referencia: RFI §5 fila 143 — planificación continua y re-optimización.
         # Tres estados posibles de cada proyecto con actuals:
@@ -7665,6 +7744,18 @@ class EnterpriseOptimizer:
                     })
 
         selected.sort(key=lambda r: r["net_value_COP"], reverse=True)
+
+        # Las descartadas por EAV se conocen ANTES de correr el solver — se
+        # reportan sin importar si este tuvo éxito o no (spec sección 6:
+        # "no desaparecen en silencio, se reportan con la razón").
+        for descartada, ganadora in _preselect_descartados:
+            postponed.append({
+                "project_id": descartada.id,
+                "project_name": descartada.name,
+                "reason": f"Descartada por EAV frente a {ganadora.id}",
+                "exclusion_group_id": getattr(descartada, "exclusion_group_id", None),
+                "asset_id": getattr(descartada, "asset_id", ""),
+            })
 
         # ── Utilización por vigencia ──────────────────────────────────────────
         budget_util, resource_util, risk_util = {}, {}, {}

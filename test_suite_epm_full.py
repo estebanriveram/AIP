@@ -38,6 +38,7 @@ PROJECT_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 # ── Import del motor ──────────────────────────────────────────────────────────
+import epm_core
 from epm_core import (
     DEFAULT_CONFIG,
     ProjectInput, CostInput, DriverInput, SubCriterionInput, RiskInput,
@@ -48,6 +49,7 @@ from epm_core import (
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
     PortfolioOptimizer, BudgetPeriod,
+    _preselect_by_eav,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
     EVMEngine, OutageCalendar, WorkflowEngine,
     PlanVersionStore,
@@ -464,7 +466,13 @@ class S2_MILP_Constraints(unittest.TestCase):
     # ── R3d: Exclusion por grupo ───────────────────────────────────────────────
 
     def test_r3d_group_exclusion(self):
-        """R3d: Del grupo de exclusion, solo 1 seleccionado."""
+        """R3d: Del grupo de exclusion, solo 1 seleccionado.
+
+        Nota: desde que _preselect_by_eav corre sin condiciones antes del
+        MILP (grupo S32), cada exclusion_group_id ya llega reducido a <=1
+        alternativa — esta prueba pasa por eso, no porque R3d se haya
+        ejercitado. El guardián real de R3d por sí solo es
+        S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion."""
         projs = []
         for i in range(3):
             p = self._p(f"PG{i}", year=2026)
@@ -2017,6 +2025,11 @@ class S20_FullIntegration(unittest.TestCase):
                              "R3c: alternativas excluyentes coexisten")
 
             # R3d: Max 1 del grupo GAS_ESG
+            # Nota: desde que _preselect_by_eav corre sin condiciones antes
+            # del MILP (grupo S32), GAS_ESG ya llega reducido a <=1 antes de
+            # esta aserción — pasa por eso, no porque R3d se haya ejercitado
+            # aquí. El guardián real de R3d por sí solo es
+            # S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion.
             gas_esg = [p for p in pids if "GAS_ESG" in p]
             self.assertLessEqual(len(gas_esg), 1, "R3d: grupo violado")
 
@@ -2612,7 +2625,13 @@ class S23_MILP_Nucleo(unittest.TestCase):
 
     def test_r3d_exclusion_de_grupo_deja_pasar_exactamente_uno(self):
         """Tres alternativas del mismo grupo excluyente, todas atractivas:
-        el grupo debe ceder exactamente una, no ninguna ni varias."""
+        el grupo debe ceder exactamente una, no ninguna ni varias.
+
+        Nota: desde que _preselect_by_eav corre sin condiciones antes del
+        MILP (grupo S32), cada exclusion_group_id ya llega reducido a <=1
+        alternativa — esta prueba pasa por eso, no porque R3d se haya
+        ejercitado. El guardián real de R3d por sí solo es
+        S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion."""
         projs = [self._bueno(f"PG{i}", capex=500_000_000, delta=2000.0)
                 for i in range(3)]
         for p in projs:
@@ -4304,6 +4323,329 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
             "anclando al índice del execution_year declarado en vez de "
             "reportar el costo relativo a CUALQUIER candidato.",
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S32 — PRESELECCIÓN DE ALTERNATIVAS POR VALOR ANUAL EQUIVALENTE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class S32_PreseleccionPorEAV(unittest.TestCase):
+    """Dentro de un exclusion_group_id, gana la alternativa de mayor EAV,
+    no la de mayor VNT crudo — salvo que una esté protegida (no-discrecional
+    o con Gasto Comprometido ya firmado), en cuyo caso esa gana sin importar
+    su EAV."""
+
+    def setUp(self):
+        self.cfg = _cfg()
+        self.engine = ValueEngine(self.cfg)
+
+    def test_preseleccion_elige_mayor_eav_no_mayor_vnt(self):
+        """Prueba decisiva: una alternativa de vida larga con VNT crudo mayor
+        pierde frente a una de vida corta con EAV mayor. Esta prueba debe
+        fallar si _preselect_by_eav no existe o si usa net_value_COP.
+
+        get_horizon_for_asset() resuelve el horizonte por asset_type (con
+        fallback a TyD._default=30 si no se declara). Sin asset_type
+        explícito, ambas alternativas caerían en ese mismo fallback: con
+        horizonte idéntico, EAV = VNT / mismo_factor_de_anualidad para las
+        dos, así que EAV nunca podría invertir el orden de VNT — el caso no
+        discriminaría nada de lo que dice probar. Por eso aquí se declara
+        asset_type distinto para cada una (activos reales de TyD, con vidas
+        útiles muy distintas: 30a vs 10a), y el CAPEX/beneficio anual de
+        cada una se calibra para que la ganadora por VNT crudo (larga,
+        pago lento: bajo beneficio anual frente a su CAPEX) y la ganadora
+        por EAV (corta, pago rápido: beneficio anual casi igual a su CAPEX)
+        efectivamente se separen — un simple reescalado proporcional de
+        ambas alternativas no basta, EAV es monótono con VNT cuando el
+        horizonte coincide."""
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="ALT_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_X",
+        )
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="ALT_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_X",
+        )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        # Confirmar la premisa del caso antes de probar la función: la larga
+        # debe tener mayor VNT crudo Y menor EAV que la corta — si el config
+        # cambia y esto deja de cumplirse, la prueba debe fallar aquí, no en
+        # un assertEqual confuso más abajo.
+        r_larga = self.engine.evaluate(larga)
+        r_corta = self.engine.evaluate(corta)
+        self.assertGreater(r_larga["net_value_COP"], r_corta["net_value_COP"],
+                            "Premisa del caso: la larga debe ganar por VNT crudo")
+        self.assertGreater(r_corta["eav_COP"], r_larga["eav_COP"],
+                            "Premisa del caso: la corta debe ganar por EAV")
+
+        ganadores, descartados = _preselect_by_eav([larga, corta], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_CORTA"})
+        self.assertEqual(len(descartados), 1)
+        self.assertEqual(descartados[0][0].id, "ALT_LARGA")
+        self.assertEqual(descartados[0][1].id, "ALT_CORTA")
+
+    def test_preseleccion_respeta_obligatoria_aunque_tenga_menor_eav(self):
+        """Lo no-discrecional pesa más que el EAV."""
+        obligatoria = _make_project(
+            pid="ALT_OBLIGATORIA", capex=50_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_Y", is_mandatory=True,
+        )
+        mejor_eav = _make_project(
+            pid="ALT_MEJOR_EAV", capex=8_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_Y",
+        )
+        ganadores, descartados = _preselect_by_eav([obligatoria, mejor_eav], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_OBLIGATORIA"})
+
+    def test_preseleccion_dos_obligatorias_falla(self):
+        """Dos alternativas no-discrecionales en el mismo grupo son un error
+        de captura, no un caso a resolver en silencio — mismo criterio que
+        ya existe hoy en la restricción R3d de ambos optimizadores."""
+        a = _make_project(pid="A", exclusion_group_id="Z", is_mandatory=True)
+        b = _make_project(pid="B", exclusion_group_id="Z", is_mandatory=True)
+        with self.assertRaises(ValueError):
+            _preselect_by_eav([a, b], self.engine)
+
+    def test_preseleccion_no_toca_proyectos_sin_grupo(self):
+        p1 = _make_project(pid="SIN_GRUPO_1")
+        p2 = _make_project(pid="SIN_GRUPO_2")
+        ganadores, descartados = _preselect_by_eav([p1, p2], self.engine)
+        self.assertEqual({p.id for p in ganadores}, {"SIN_GRUPO_1", "SIN_GRUPO_2"})
+        self.assertEqual(descartados, [])
+
+    def test_preseleccion_grupo_de_un_solo_elemento_no_se_descarta(self):
+        p = _make_project(pid="UNICA", exclusion_group_id="SOLO_UNA")
+        ganadores, descartados = _preselect_by_eav([p], self.engine)
+        self.assertEqual({p.id for p in ganadores}, {"UNICA"})
+        self.assertEqual(descartados, [])
+
+    def test_preseleccion_respeta_comprometida_aunque_tenga_menor_eav(self):
+        """Gasto Comprometido (contrato ya firmado) pesa más que el EAV,
+        igual que lo obligatorio."""
+        comprometida = _make_project(
+            pid="ALT_COMPROMETIDA", capex=50_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_COMP", is_committed=True,
+        )
+        mejor_eav = _make_project(
+            pid="ALT_MEJOR_EAV_2", capex=8_000_000_000, exec_year=2026,
+            exclusion_group_id="NECESIDAD_COMP",
+        )
+        ganadores, descartados = _preselect_by_eav([comprometida, mejor_eav], self.engine)
+        ids_ganadores = {p.id for p in ganadores}
+        self.assertEqual(ids_ganadores, {"ALT_COMPROMETIDA"})
+
+    def test_preseleccion_comprometida_y_obligatoria_en_el_mismo_grupo_falla(self):
+        """Una comprometida y una obligatoria compitiendo en el mismo grupo
+        son dos protecciones distintas reclamando la misma necesidad — error
+        de captura, no un caso a resolver en silencio."""
+        obligatoria = _make_project(pid="OBL", exclusion_group_id="ZZ", is_mandatory=True)
+        comprometida = _make_project(pid="COMP", exclusion_group_id="ZZ", is_committed=True)
+        with self.assertRaises(ValueError):
+            _preselect_by_eav([obligatoria, comprometida], self.engine)
+
+    def test_r3d_sigue_activo_si_se_desactiva_la_preseleccion(self):
+        """La preselección por EAV ahora reduce cada grupo a <=1 ANTES de
+        que el MILP corra, así que su propia restricción de exclusión de
+        grupo (R3d / Restricción 5) nunca se ejercita en la práctica — tres
+        pruebas preexistentes que decían vigilarla (S2, S20, S23) ahora
+        pasan por esa razón, no por la restricción MILP misma. Esta prueba
+        restaura cobertura real: desactiva la preselección (monkeypatch a
+        una función identidad que no descarta nada) y confirma que la
+        restricción del MILP, sola, sigue impidiendo que se seleccione más
+        de una alternativa del mismo grupo."""
+        import unittest.mock as _mock
+
+        def _identidad(projects, engine):
+            return list(projects), []
+
+        # Ambas alternativas deben tener VNT fuertemente positivo (~5.500 MM
+        # y ~5.300 MM COP, verificado): el optimizador las QUIERE a ambas, no
+        # hay que forzarlo. Si no fuera así, "a lo sumo 1 seleccionado" sería
+        # trivialmente cierto por falta de presupuesto/atractivo y no
+        # probaría que la restricción de grupo es la que está actuando —
+        # verificado empíricamente desactivando temporalmente la restricción
+        # de grupo del MILP: sin ella el solver selecciona AMBAS (2), con
+        # ella exactamente 1.
+        sc_a = _make_sc("VD-1-A", delta=2000.0, price=335_000)
+        alt_a = _make_project(
+            pid="R3D_A", capex=500_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_a])],
+            exclusion_group_id="NECESIDAD_R3D",
+        )
+        alt_a.asset_type = "_default"
+        sc_b = _make_sc("VD-1-A", delta=1900.0, price=335_000)
+        alt_b = _make_project(
+            pid="R3D_B", capex=450_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_b])],
+            exclusion_group_id="NECESIDAD_R3D",
+        )
+        alt_b.asset_type = "_default"
+        periods_simple = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
+        with _mock.patch.object(epm_core, "_preselect_by_eav", side_effect=_identidad):
+            opt = PortfolioOptimizer(config=self.cfg)
+            result = opt.optimize([alt_a, alt_b], periods_simple, base_year=2026)
+        ids_seleccionados = [s["project_id"] for s in result.selected]
+        self.assertEqual(
+            len(ids_seleccionados), 1,
+            "Con la preselección desactivada y ambas alternativas de VNT "
+            "fuertemente positivo (el optimizador las quiere a ambas), la "
+            "restricción de exclusión de grupo del MILP (Restricción 5) debe "
+            "seguir permitiendo exactamente 1 de NECESIDAD_R3D — ni 0 ni 2.",
+        )
+
+    def test_portfolio_simple_usa_preseleccion(self):
+        """La alternativa descartada por EAV nunca debe llegar a competir
+        por presupuesto (no debe aparecer en selected) — pero tampoco debe
+        desaparecer en silencio: debe aparecer en postponed con la razón
+        explícita (spec sección 6: 'no desaparecen en silencio, se reportan
+        con la razón')."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="OPT_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_OPT",
+        )
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="OPT_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_OPT",
+        )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        periods = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+
+        ids_seleccionados = {s["project_id"] for s in result.selected}
+        self.assertNotIn(
+            "OPT_LARGA", ids_seleccionados,
+            "La alternativa de mayor VNT crudo pero menor EAV no debía "
+            "llegar a competir por presupuesto en absoluto.",
+        )
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "OPT_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe quedar visible en postponed, no "
+            "desaparecer en silencio (spec sección 6).",
+        )
+        self.assertIn("EAV", descartada["reason"])
+        self.assertIn("OPT_CORTA", descartada["reason"])
+
+    def test_portfolio_simple_descartada_por_eav_visible_aunque_infactible(self):
+        """Las descartadas por EAV deben reportarse en postponed incluso si
+        el solver resulta infactible (0 de presupuesto) — se conocen ANTES
+        de correr el solver, no dependen de que este tenga éxito."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="INF_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_INF",
+        )
+        larga.asset_type = "transformador_potencia"
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="INF_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_INF", is_mandatory=True,
+        )
+        corta.asset_type = "sistema_control_SCADA"
+        # Presupuesto 0: INF_CORTA (la ganadora por EAV, ahora obligatoria)
+        # no cabe en ningún lado — el solver debe reportar infactible.
+        periods = [BudgetPeriod(year=2026, budget_COP=0.0)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+        self.assertEqual(result.solver_status, "INFEASIBLE")
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "INF_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe seguir visible en postponed aunque "
+            "el solver resulte infactible.",
+        )
+
+    def test_enterprise_usa_preseleccion(self):
+        """Mismo caso que el del optimizador simple, para EnterpriseOptimizer."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="ENT_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_ENT",
+        )
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="ENT_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_ENT",
+        )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        periods = [ResourcePeriod(year=2026, budget_COP=100_000_000_000)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+
+        ids_seleccionados = {s["project_id"] for s in result.selected}
+        self.assertNotIn(
+            "ENT_LARGA", ids_seleccionados,
+            "La alternativa de mayor VNT crudo pero menor EAV no debía "
+            "llegar a competir por presupuesto en absoluto.",
+        )
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "ENT_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe quedar visible en postponed, no "
+            "desaparecer en silencio (spec sección 6).",
+        )
+        self.assertIn("EAV", descartada["reason"])
+        self.assertIn("ENT_CORTA", descartada["reason"])
+
+    def test_enterprise_descartada_por_eav_visible_aunque_infactible(self):
+        """Las descartadas por EAV deben reportarse en postponed incluso si
+        el solver resulta infactible — se conocen ANTES de correr el
+        solver, no dependen de que este tenga éxito."""
+        opt = EnterpriseOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="ENT_INF_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_ENT_INF",
+        )
+        larga.asset_type = "transformador_potencia"
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="ENT_INF_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_ENT_INF", is_mandatory=True,
+        )
+        corta.asset_type = "sistema_control_SCADA"
+        # Solo ENT_INF_CORTA es obligatoria (la ganadora por EAV) — si ambas
+        # lo fueran, _preselect_by_eav lanzaría su propio ValueError de "dos
+        # obligatorias" antes de llegar al solver, que no es el escenario
+        # que esta prueba quiere ejercitar.
+        periods = [ResourcePeriod(year=2026, budget_COP=0.0)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+        self.assertEqual(result.solver_status, "INFEASIBLE")
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "ENT_INF_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe seguir visible en postponed aunque "
+            "el solver resulte infactible.",
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
