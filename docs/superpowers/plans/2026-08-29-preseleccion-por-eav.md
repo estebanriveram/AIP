@@ -459,43 +459,32 @@ No es necesariamente un error de cálculo — en teoría de presupuesto de capit
 **Files:**
 - Create: `<scratchpad_actual>/mutacion_preseleccion_eav.py`
 
-- [ ] **Step 1: Escribir el script de mutación**
+**Nota:** el borrador original (4 mutaciones, `T1-A/B`, `T2-A`, `T3-A`) se escribió antes de las Tasks 2-3 y no cubría el hallazgo de "descartadas visibles aunque el solver falle" (corregido en ambos optimizadores tras revisión de calidad). Reescrito abajo con las 6 mutaciones realmente ejecutadas contra el código final.
 
-Mismo patrón que `mutacion_anio_optimo.py` y `mutacion_capex_perfil.py`. Mutaciones:
+- [x] **Step 1: Escribir el script de mutación (versión final — 6 mutaciones)**
 
-```python
-MUT = [
- ("T1-A", "La preselección vuelve a comparar por VNT crudo en vez de EAV",
-  '            ganador = max(alternativas, key=lambda p: engine.evaluate(p)["eav_COP"])',
-  '            ganador = max(alternativas, key=lambda p: engine.evaluate(p)["net_value_COP"])'),
+Mismo patrón que `mutacion_anio_optimo.py` y `mutacion_capex_perfil.py`. Cada mutación reintroduce un defecto específico de la historia real de este plan:
 
- ("T1-B", "Lo obligatorio deja de tener precedencia sobre el EAV",
-  "        if mandatorias:\n            ganador = mandatorias[0]\n        else:",
-  "        if False and mandatorias:\n            ganador = mandatorias[0]\n        else:"),
+| ID | Qué rompe |
+|---|---|
+| MUT1-EAV | `_preselect_by_eav` vuelve a comparar por `net_value_COP` crudo en vez de `eav_COP` |
+| MUT2-MANDATORY | La rama `if mandatorias: ganador = mandatorias[0]` deja de tener precedencia |
+| MUT3-PORT-CALL | `PortfolioOptimizer.optimize` deja de llamar la preselección |
+| MUT4-ENT-CALL | `EnterpriseOptimizer.optimize` deja de llamar la preselección |
+| MUT5-PORT-SUCCESS | `PortfolioOptimizer` vuelve a reportar descartadas solo si `result.success` (el defecto corregido tras la revisión de calidad de la Task 2) |
+| MUT6-ENT-SUCCESS | `EnterpriseOptimizer` vuelve a reportar descartadas solo si `prob.status == 1` (mismo defecto, Task 3) |
 
- ("T2-A", "PortfolioOptimizer deja de llamar la preselección",
-  "        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)\n\n        n_proj = len(projects)",
-  "        n_proj = len(projects)"),
+Los fragmentos exactos de texto para cada mutación se anclan contra comentarios distintivos de cada optimizador (las dos llamadas a `_preselect_by_eav` y los dos bucles de reporte son casi idénticos entre `PortfolioOptimizer` y `EnterpriseOptimizer`, así que el ancla debe incluir contexto suficiente para no ser ambigua — p. ej. el comentario que precede a cada llamada es distinto en longitud/redacción entre los dos optimizadores, y el diccionario de reporte de Enterprise tiene dos claves (`exclusion_group_id`, `asset_id`) que el de Portfolio no tiene). Verificar cada fragmento contra el archivo real (`count() == 1`) antes de fijarlo en el script — no copiar los fragmentos de esta tabla literalmente, son una descripción del defecto, no el texto exacto a sustituir.
 
- ("T3-A", "EnterpriseOptimizer deja de llamar la preselección",
-  "        # Preselección por EAV: reduce cada grupo de exclusión a una sola\n        # alternativa ANTES de construir cualquier matriz.\n        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)",
-  "        pass"),
-]
-```
-
-(Nota para quien ejecute: las mutaciones T2-A y T3-A dependen del texto exacto que haya quedado tras implementar las Tasks 2 y 3 — confirmar cada patrón contra el archivo real antes de correr la campaña, ajustando si la implementación real difirió del fragmento sugerido en esos pasos.)
-
-- [ ] **Step 2: Correr la campaña**
+- [x] **Step 2: Correr la campaña**
 
 Run: `python <ruta_scratchpad>/mutacion_preseleccion_eav.py`
-Expected: `MUERTOS 4/4`. Si algo sobrevive, reforzar la prueba correspondiente antes de continuar — mismo criterio que en todas las campañas anteriores.
 
-- [ ] **Step 3: Commit**
+**Resultado real:** `MUERTOS 6/6` en la primera corrida — ninguna prueba necesitó fortalecerse. Verificado de forma independiente por el coordinador, corriendo el script una segunda vez.
 
-```bash
-git add test_suite_epm_full.py
-git commit -m "test: campaña de mutación confirma 4/4 para la preselección por EAV"
-```
+- [x] **Step 3: Commit**
+
+Sin commit de código — la campaña murió 6/6 en la primera corrida, así que no hubo ninguna prueba que corregir o agregar. El script de mutación vive en el scratchpad de la sesión (no en el repositorio), como las campañas anteriores.
 
 ---
 
