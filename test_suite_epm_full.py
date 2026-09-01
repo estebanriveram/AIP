@@ -57,6 +57,7 @@ from epm_core import (
     _merge_config_defaults,
     WF_STATES, WF_FULL_TRANSITIONS, WF_TERMINAL_STATES,
     PULP_OK,
+    INVESTMENT_TYPES,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2104,10 +2105,23 @@ class S21_TratamientoTemporal(unittest.TestCase):
         return ValueEngine(_cfg())
 
     def _proyecto(self, bu):
+        # Riesgo base subido de (3,3,1,1) a (4,4,1,1) tras Reto 6 (VD-6,
+        # D-11): al corregir la doble contabilización de reputación, el
+        # riesgo mitigado (ΔR) de los 4 negocios se redujo — parte de su
+        # magnitud anterior era, precisamente, la duplicación que se
+        # retiró. Con (3,3,1,1) y este CAPEX/beneficio, el diferimiento se
+        # volvía "gratis" para 2 de 4 negocios: no por el defecto
+        # histórico que este grupo vigila (verificado — ΔR decrece con el
+        # diferimiento, no crece más rápido que el descuento), sino porque
+        # el CAPEX a valor presente se abarata con el tiempo (inflación de
+        # obra < WACC, propiedad preexistente del motor) más rápido de lo
+        # que decrecían los beneficios y el ΔR ya reducido. Subir la
+        # severidad de riesgo base restaura el margen sin tocar la
+        # calibración de Reto 6 ni el mecanismo del motor.
         return _make_project(
             pid=f"DIF-{bu}", bu=bu, capex=8_000_000_000,
             drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=200.0)])],
-            risk=_make_risk(3, 3, 1, 1), construction_years=1)
+            risk=_make_risk(4, 4, 1, 1), construction_years=1)
 
     # ── El invariante central ────────────────────────────────────────────────
 
@@ -3023,23 +3037,39 @@ class S25_FuncionDeValor(unittest.TestCase):
         self.assertNotIn("VD-6-A", got["deprecated_skipped"])
         self.assertNotEqual(got["value_COP"], 0.0)
 
-    def test_matriz_riesgo_ya_no_cobra_componente_reputacional(self):
-        """value_COP de cada nivel de consecuencia debe ser directo+regulatorio,
-        sin el reputacional que ahora vive solo en VD-6."""
-        niveles_esperados = {
-            "1": 55_000_000, "2": 250_000_000, "3": 1_300_000_000,
-            "4": 7_000_000_000, "5": 25_000_000_000,
+    def test_matriz_riesgo_por_negocio_ya_no_cobra_componente_reputacional(self):
+        """value_COP resuelto en TIEMPO DE EJECUCIÓN para cada negocio real
+        (no la tabla plana genérica, que casi ningún proyecto usa) debe ser
+        el valor sin componente reputacional — verificado leyendo
+        directamente consequence_levels_by_bu, la tabla que _calc_risk()
+        realmente resuelve primero según la jerarquía documentada
+        (consequence_levels_by_bu[BU] > consequence_levels > respaldo)."""
+        esperados = {
+            "TyD":        {"1": 44_687_500,    "5": 27_000_000_000},
+            "Generacion": {"1": 68_750_000,    "5": 41_000_000_000},
+            "AyA":        {"1": 37_812_500,    "5": 45_000_000_000},
+            "Gas":        {"1": 37_812_500,    "5": 23_000_000_000},
         }
-        anclas = self.cfg["risk_matrix"]["consequence_levels"]
-        for nivel, esperado in niveles_esperados.items():
-            componentes = anclas[nivel]["_componentes"]
-            reconstruido = componentes["directo_COP"] + componentes["regulatorio_COP"]
-            self.assertEqual(reconstruido, esperado,
-                             f"Nivel {nivel}: directo+regulatorio no coincide con el "
-                             f"value_COP esperado — revisar si _componentes cambió.")
-            self.assertEqual(anclas[nivel]["value_COP"], esperado,
-                             f"Nivel {nivel}: value_COP todavía incluye el componente "
-                             f"reputacional o no se actualizó.")
+        tabla = self.cfg["risk_matrix"]["consequence_levels_by_bu"]
+        for bu, niveles in esperados.items():
+            for nivel, esperado in niveles.items():
+                self.assertAlmostEqual(
+                    tabla[bu][nivel]["value_COP"], esperado, delta=1.0,
+                    msg=f"{bu} nivel {nivel}: sigue con el componente reputacional "
+                        f"incluido, o consequence_levels_by_bu no existe en config.json "
+                        f"y el motor está cayendo al respaldo desactualizado.",
+                )
+
+    def test_vd6_alcanzable_desde_investment_types(self):
+        """VD-6-A debe aparecer como sugerido en todos los tipos de
+        inversión — Reputación es uniforme para los 4 negocios, no
+        exclusivo de un tipo de proyecto."""
+        for inv_type, cfg_it in INVESTMENT_TYPES.items():
+            self.assertIn(
+                "VD-6-A", cfg_it.get("suggested_sc", []),
+                f"'{inv_type}' no sugiere VD-6-A — Reto 6 quedaría inalcanzable "
+                f"desde el asistente para este tipo de inversión.",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

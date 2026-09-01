@@ -996,54 +996,61 @@ DEFAULT_CONFIG = {
         # ── Totales por BU (suma de los 5 tipos por nivel) ──────────────────────────────
         # Usados como CoF agregado cuando el modelo no tiene desglose por tipo.
         # Recalibrados para reflejar la nueva metodología por marco de valor por negocio.
+        # NOTA (Reto 6 — Reputación, VD-6): value_COP de esta tabla ya NO incluye
+        # componente reputacional. Reducido aplicando la misma proporción reputacional
+        # por nivel que existe en config.json's risk_matrix.consequence_levels (tabla
+        # plana) — esta tabla por-negocio nunca tuvo desglose propio directo/regulatorio/
+        # reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente.
+        # Pendiente de validar con Gestión del Riesgo EPM. Debe permanecer sincronizada
+        # con risk_matrix.consequence_levels_by_bu en config.json.
         "consequence_levels_by_bu": {
             "TyD": {
-                "1": {"label": "Muy Menor",    "value_COP":    65_000_000,
+                "1": {"label": "Muy Menor",    "value_COP":    44_687_500,
                       "_ancla": "Reparacion menor. ENS < 1 MWh. Sin penalidad CREG."},
-                "2": {"label": "Menor",        "value_COP":   440_000_000,
+                "2": {"label": "Menor",        "value_COP":   275_000_000,
                       "_ancla": "Falla alimentador. ENS ~5 MWh + reparacion + lesion leve."},
-                "3": {"label": "Moderado",     "value_COP": 3_450_000_000,
+                "3": {"label": "Moderado",     "value_COP": 2_242_500_000,
                       "_ancla": "Falla subestacion menor. ENS + reparacion + multa CREG + ambiental."},
-                "4": {"label": "Mayor",        "value_COP": 17_000_000_000,
+                "4": {"label": "Mayor",        "value_COP": 9_916_666_667,
                       "_ancla": "Falla subestacion mayor. ENS significativa + sancion CREG + fatalidad."},
-                "5": {"label": "Catastrofico", "value_COP": 54_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 27_000_000_000,
                       "_ancla": "Evento multi-subestacion. ENS masiva + sancion maxima CREG + crisis institucional TyD."},
             },
             "Generacion": {
-                "1": {"label": "Muy Menor",    "value_COP":   100_000_000,
+                "1": {"label": "Muy Menor",    "value_COP":    68_750_000,
                       "_ancla": "Indisponibilidad <4h. Sin penalidad ENFICC."},
-                "2": {"label": "Menor",        "value_COP":   700_000_000,
+                "2": {"label": "Menor",        "value_COP":   437_500_000,
                       "_ancla": "Despacho perdido 1-2 dias. Penalidad ENFICC + reparacion."},
-                "3": {"label": "Moderado",     "value_COP": 5_000_000_000,
+                "3": {"label": "Moderado",     "value_COP": 3_250_000_000,
                       "_ancla": "Planta fuera 1-4 semanas. Lucro cesante + penalidad ENFICC + ambiental."},
-                "4": {"label": "Mayor",        "value_COP": 28_500_000_000,
+                "4": {"label": "Mayor",        "value_COP": 16_625_000_000,
                       "_ancla": "Dano catastrofico activo. Indisponibilidad 6-12 meses + fatalidad + sancion CREG + spread crediticio."},
-                "5": {"label": "Catastrofico", "value_COP": 82_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 41_000_000_000,
                       "_ancla": "Destruccion planta/presa. Perdida total ENFICC + multiples victimas + impacto capital markets. Ref. Hidroituango."},
             },
             "AyA": {
-                "1": {"label": "Muy Menor",    "value_COP":    55_000_000,
+                "1": {"label": "Muy Menor",    "value_COP":    37_812_500,
                       "_ancla": "Fuga menor contenida. Sin afectacion a usuarios ni fuente hidrica."},
-                "2": {"label": "Menor",        "value_COP":   320_000_000,
+                "2": {"label": "Menor",        "value_COP":   200_000_000,
                       "_ancla": "Rotura tuberia secundaria. Carrotanque + reparacion + reporte CRA."},
-                "3": {"label": "Moderado",     "value_COP": 2_400_000_000,
+                "3": {"label": "Moderado",     "value_COP": 1_560_000_000,
                       "_ancla": "Averia PTAR o red troncal. Emergencia usuarios + brote leve + multa CRA + ANLA."},
-                "4": {"label": "Mayor",        "value_COP": 20_500_000_000,
+                "4": {"label": "Mayor",        "value_COP": 11_958_333_333,
                       "_ancla": "Colapso infraestructura + brote hidrico significativo + medida SSPD + crisis publica."},
-                "5": {"label": "Catastrofico", "value_COP": 90_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 45_000_000_000,
                       "_ancla": "Colapso sistema hidrico regional + epidemia + riesgo concesion + intervencion estatal. "
                                 "AyA L5 es el mayor de todos los BU por la escala de salud publica."},
             },
             "Gas": {
-                "1": {"label": "Muy Menor",    "value_COP":    55_000_000,
+                "1": {"label": "Muy Menor",    "value_COP":    37_812_500,
                       "_ancla": "Fuga menor contenida. Sin evacuacion. Sin reporte obligatorio."},
-                "2": {"label": "Menor",        "value_COP":   280_000_000,
+                "2": {"label": "Menor",        "value_COP":   175_000_000,
                       "_ancla": "Corte sector. Reparacion urgente + reporte ANLA + multa MinMinas."},
-                "3": {"label": "Moderado",     "value_COP": 1_800_000_000,
+                "3": {"label": "Moderado",     "value_COP": 1_170_000_000,
                       "_ancla": "Explosion menor. Heridos comunidad + ambiental + multa MinMinas + cobertura medios."},
-                "4": {"label": "Mayor",        "value_COP": 11_500_000_000,
+                "4": {"label": "Mayor",        "value_COP": 6_708_333_333,
                       "_ancla": "Explosion con fatalidades residenciales + dano infraestructura + suspension franquicia + crisis imagen."},
-                "5": {"label": "Catastrofico", "value_COP": 46_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 23_000_000_000,
                       "_ancla": "Desastre explosion masiva. Multiples victimas residenciales + revocacion franquicia + crisis institucional."},
             },
         },
@@ -1101,12 +1108,14 @@ DEFAULT_CONFIG = {
                     "_calibracion": "20% ingreso regulado anual x factor exposicion reputacional",
                     "deprecated": True,
                     "deprecated_reason": (
-                        "Copperleaf C55 v3.1: el riesgo reputacional esta colapsado en "
-                        "las anclas L1-L5 (value_COP = directo+regulatorio+reputacional). "
-                        "Usar VD-1-F adicional genera doble conteo. "
-                        "Conservado para trazabilidad de evaluaciones historicas."
+                        "Contenido trasladado a VD-6-A (Reto Reputación, agregado por EPM). "
+                        "Usar VD-1-F junto con VD-6-A duplicaría el aporte reputacional dentro "
+                        "de los value drivers. Ya NO es sobre la matriz de riesgo — el "
+                        "componente reputacional se retiró de las anclas L1-L5 al mismo tiempo "
+                        "que se creó VD-6. Conservado para trazabilidad de evaluaciones "
+                        "históricas anteriores a este cambio."
                     ),
-                    "deprecated_since": "config_v3.1.0"
+                    "deprecated_since": "config_v3.0.0"
                 }
             ]
         },
@@ -1238,6 +1247,32 @@ DEFAULT_CONFIG = {
                     "_calibracion": "Base activos por negocio × 5pp mejora máxima benchmark CREG"
                 }
             ]
+        },
+        {
+            "id": "VD-6",
+            "reto": "Reputación",
+            "weight": 1.0,
+            "sub_criteria": [
+                {
+                    "id": "VD-6-A", "label": "Reputación EPM (NPS + CX + imagen)",
+                    "type": "concept_rating", "weight": 1.0,
+                    "value_function": "s_curve", "vf_inflection": 5.0, "vf_steepness": 1.5,
+                    "scale_max_COP": 320_000_000_000,
+                    "scale_max_by_bu": {
+                        "TyD": 280_000_000_000, "AyA": 320_000_000_000,
+                        "Generacion": 380_000_000_000, "Gas": 180_000_000_000,
+                        "Todos": 420_000_000_000
+                    },
+                    "_fuente": "Reactivado de VD-1-F (retirado en config_v3.0.0). Calibración "
+                               "original conservada sin cambios: 20% ingreso regulado anual × "
+                               "factor exposición reputacional.",
+                    "_nota": "Reto agregado por EPM sin definición propia — uniforme para los "
+                             "4 negocios, metodología heredada de VD-1-F/Copperleaf VDM. Ver "
+                             "REGISTRO_ASUNTOS_ABIERTOS.md D-11 para la distinción metodológica "
+                             "frente a la fuente Copperleaf (que documenta reputación como "
+                             "categoría de riesgo, no como Modelo de Valor)."
+                }
+            ]
         }
     ]
 }
@@ -1247,7 +1282,7 @@ INVESTMENT_TYPES = {
     "Reposición de Activos": {
         "description": "Reemplazo de activo al final de su vida útil",
         "mandatory_sc": ["VD-1-A", "VD-1-B", "VD-2-A"],
-        "suggested_sc": ["VD-1-C", "VD-1-D", "VD-1-E", "VD-5-A", "VD-5-D"]
+        "suggested_sc": ["VD-1-C", "VD-1-D", "VD-1-E", "VD-5-A", "VD-5-D", "VD-6-A"]
         # VD-5-D: la reposición mantiene el activo en la base de remuneración CREG;
         # si el activo se retira y reemplaza, la remuneración puede incrementarse
         # si el VRN nuevo es mayor al VRN depreciado del activo reemplazado.
@@ -1255,31 +1290,31 @@ INVESTMENT_TYPES = {
     "Crecimiento / Expansión": {
         "description": "Nuevas conexiones o ampliación de capacidad",
         "mandatory_sc": ["VD-3-A", "VD-3-B", "VD-3-C"],
-        "suggested_sc": ["VD-1-A", "VD-1-B", "VD-5-C", "VD-5-D"]
+        "suggested_sc": ["VD-1-A", "VD-1-B", "VD-5-C", "VD-5-D", "VD-6-A"]
         # VD-5-D: proyectos de expansión habilitan nuevos activos que CREG
         # reconoce a VRN → ingreso regulado anual = VRN_nuevo × tasa_CREG.
     },
     "Cumplimiento Regulatorio": {
         "description": "Inversión requerida por norma CREG/CRA/ANLA",
         "mandatory_sc": ["VD-5-A", "VD-4-C"],
-        "suggested_sc": ["VD-1-B", "VD-2-A", "VD-5-D"]
+        "suggested_sc": ["VD-1-B", "VD-2-A", "VD-5-D", "VD-6-A"]
         # VD-5-D: proyectos de cumplimiento frecuentemente habilitan activos
         # nuevos (reemplazos, upgrades) reconocibles en la base regulatoria CREG.
     },
     "Eficiencia Operativa": {
         "description": "Reducción de OPEX o pérdidas técnicas",
         "mandatory_sc": ["VD-2-A"],
-        "suggested_sc": ["VD-2-B", "VD-2-C", "VD-1-A", "VD-5-A"]
+        "suggested_sc": ["VD-2-B", "VD-2-C", "VD-1-A", "VD-5-A", "VD-6-A"]
     },
     "Sostenibilidad / ESG": {
         "description": "Reducción huella ambiental y carbono",
         "mandatory_sc": ["VD-4-A"],
-        "suggested_sc": ["VD-4-B", "VD-4-C", "VD-5-C"]
+        "suggested_sc": ["VD-4-B", "VD-4-C", "VD-5-C", "VD-6-A"]
     },
     "Proyecto Empresarial / TI": {
         "description": "Iniciativas tecnológicas o de transformación organizacional",
         "mandatory_sc": ["VD-5-A", "VD-5-C"],
-        "suggested_sc": ["VD-2-A", "VD-3-A"]
+        "suggested_sc": ["VD-2-A", "VD-3-A", "VD-6-A"]
     }
 }
 
@@ -4938,6 +4973,7 @@ class ProjectWizard:
                 ("VD-3", "Cobertura / Conexiones"),
                 ("VD-4", "Carbono"),
                 ("VD-5", "Generación de Valor"),
+                ("VD-6", "Reputación"),
             ]:
                 offset = ask(f"  Offset {vd_id} — {vd_lbl} [0]",
                               cast=int, default=0, required=False) or 0

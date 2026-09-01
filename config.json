@@ -659,6 +659,136 @@
         "_nota": "L5 calibrado como fracción del impacto real Hidroituango. Reputacional = pérdida de confianza + sobrecostos financiación + valor de marca en 10 años."
       }
     },
+    "consequence_levels_by_bu": {
+      "TyD": {
+        "1": {
+          "label": "Muy Menor",
+          "value_COP": 44687500,
+          "_ancla": "Reparacion menor. ENS < 1 MWh. Sin penalidad CREG.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 65000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "2": {
+          "label": "Menor",
+          "value_COP": 275000000,
+          "_ancla": "Falla alimentador. ENS ~5 MWh + reparacion + lesion leve.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 440000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "3": {
+          "label": "Moderado",
+          "value_COP": 2242500000,
+          "_ancla": "Falla subestacion menor. ENS + reparacion + multa CREG + ambiental.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 3450000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "4": {
+          "label": "Mayor",
+          "value_COP": 9916666667,
+          "_ancla": "Falla subestacion mayor. ENS significativa + sancion CREG + fatalidad.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 17000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "5": {
+          "label": "Catastrofico",
+          "value_COP": 27000000000,
+          "_ancla": "Evento multi-subestacion. ENS masiva + sancion maxima CREG + crisis institucional TyD.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 54000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        }
+      },
+      "Generacion": {
+        "1": {
+          "label": "Muy Menor",
+          "value_COP": 68750000,
+          "_ancla": "Indisponibilidad <4h. Sin penalidad ENFICC.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 100000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "2": {
+          "label": "Menor",
+          "value_COP": 437500000,
+          "_ancla": "Despacho perdido 1-2 dias. Penalidad ENFICC + reparacion.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 700000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "3": {
+          "label": "Moderado",
+          "value_COP": 3250000000,
+          "_ancla": "Planta fuera 1-4 semanas. Lucro cesante + penalidad ENFICC + ambiental.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 5000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "4": {
+          "label": "Mayor",
+          "value_COP": 16625000000,
+          "_ancla": "Dano catastrofico activo. Indisponibilidad 6-12 meses + fatalidad + sancion CREG + spread crediticio.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 28500000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "5": {
+          "label": "Catastrofico",
+          "value_COP": 41000000000,
+          "_ancla": "Destruccion planta/presa. Perdida total ENFICC + multiples victimas + impacto capital markets. Ref. Hidroituango.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 82000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        }
+      },
+      "AyA": {
+        "1": {
+          "label": "Muy Menor",
+          "value_COP": 37812500,
+          "_ancla": "Fuga menor contenida. Sin afectacion a usuarios ni fuente hidrica.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 55000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "2": {
+          "label": "Menor",
+          "value_COP": 200000000,
+          "_ancla": "Rotura tuberia secundaria. Carrotanque + reparacion + reporte CRA.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 320000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "3": {
+          "label": "Moderado",
+          "value_COP": 1560000000,
+          "_ancla": "Averia PTAR o red troncal. Emergencia usuarios + brote leve + multa CRA + ANLA.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 2400000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "4": {
+          "label": "Mayor",
+          "value_COP": 11958333333,
+          "_ancla": "Colapso infraestructura + brote hidrico significativo + medida SSPD + crisis publica.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 20500000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "5": {
+          "label": "Catastrofico",
+          "value_COP": 45000000000,
+          "_ancla": "Colapso sistema hidrico regional + epidemia + riesgo concesion + intervencion estatal. AyA L5 es el mayor de todos los BU por la escala de salud publica.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 90000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        }
+      },
+      "Gas": {
+        "1": {
+          "label": "Muy Menor",
+          "value_COP": 37812500,
+          "_ancla": "Fuga menor contenida. Sin evacuacion. Sin reporte obligatorio.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 55000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "2": {
+          "label": "Menor",
+          "value_COP": 175000000,
+          "_ancla": "Corte sector. Reparacion urgente + reporte ANLA + multa MinMinas.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 280000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "3": {
+          "label": "Moderado",
+          "value_COP": 1170000000,
+          "_ancla": "Explosion menor. Heridos comunidad + ambiental + multa MinMinas + cobertura medios.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 1800000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "4": {
+          "label": "Mayor",
+          "value_COP": 6708333333,
+          "_ancla": "Explosion con fatalidades residenciales + dano infraestructura + suspension franquicia + crisis imagen.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 11500000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        },
+        "5": {
+          "label": "Catastrofico",
+          "value_COP": 23000000000,
+          "_ancla": "Desastre explosion masiva. Multiples victimas residenciales + revocacion franquicia + crisis institucional.",
+          "_estimado_reputacion": "value_COP ORIGINAL (con reputación) era 46000000000. Reducido aplicando la misma proporción reputacional por nivel que ya existe en risk_matrix.consequence_levels (tabla plana) — ESTA tabla nunca tuvo desglose propio directo/regulatorio/reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente. Pendiente de validar con Gestión del Riesgo EPM."
+        }
+      }
+    },
     "probability_levels": {
       "1": {
         "label": "Muy Baja",
