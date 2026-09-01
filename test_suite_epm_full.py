@@ -466,7 +466,13 @@ class S2_MILP_Constraints(unittest.TestCase):
     # ── R3d: Exclusion por grupo ───────────────────────────────────────────────
 
     def test_r3d_group_exclusion(self):
-        """R3d: Del grupo de exclusion, solo 1 seleccionado."""
+        """R3d: Del grupo de exclusion, solo 1 seleccionado.
+
+        Nota: desde que _preselect_by_eav corre sin condiciones antes del
+        MILP (grupo S32), cada exclusion_group_id ya llega reducido a <=1
+        alternativa — esta prueba pasa por eso, no porque R3d se haya
+        ejercitado. El guardián real de R3d por sí solo es
+        S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion."""
         projs = []
         for i in range(3):
             p = self._p(f"PG{i}", year=2026)
@@ -2019,6 +2025,11 @@ class S20_FullIntegration(unittest.TestCase):
                              "R3c: alternativas excluyentes coexisten")
 
             # R3d: Max 1 del grupo GAS_ESG
+            # Nota: desde que _preselect_by_eav corre sin condiciones antes
+            # del MILP (grupo S32), GAS_ESG ya llega reducido a <=1 antes de
+            # esta aserción — pasa por eso, no porque R3d se haya ejercitado
+            # aquí. El guardián real de R3d por sí solo es
+            # S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion.
             gas_esg = [p for p in pids if "GAS_ESG" in p]
             self.assertLessEqual(len(gas_esg), 1, "R3d: grupo violado")
 
@@ -2614,7 +2625,13 @@ class S23_MILP_Nucleo(unittest.TestCase):
 
     def test_r3d_exclusion_de_grupo_deja_pasar_exactamente_uno(self):
         """Tres alternativas del mismo grupo excluyente, todas atractivas:
-        el grupo debe ceder exactamente una, no ninguna ni varias."""
+        el grupo debe ceder exactamente una, no ninguna ni varias.
+
+        Nota: desde que _preselect_by_eav corre sin condiciones antes del
+        MILP (grupo S32), cada exclusion_group_id ya llega reducido a <=1
+        alternativa — esta prueba pasa por eso, no porque R3d se haya
+        ejercitado. El guardián real de R3d por sí solo es
+        S32_PreseleccionPorEAV.test_r3d_sigue_activo_si_se_desactiva_la_preseleccion."""
         projs = [self._bueno(f"PG{i}", capex=500_000_000, delta=2000.0)
                 for i in range(3)]
         for p in projs:
@@ -4314,7 +4331,9 @@ class S31_PerfilCapexPorAnio(unittest.TestCase):
 
 class S32_PreseleccionPorEAV(unittest.TestCase):
     """Dentro de un exclusion_group_id, gana la alternativa de mayor EAV,
-    no la de mayor VNT crudo — salvo que una sea no-discrecional."""
+    no la de mayor VNT crudo — salvo que una esté protegida (no-discrecional
+    o con Gasto Comprometido ya firmado), en cuyo caso esa gana sin importar
+    su EAV."""
 
     def setUp(self):
         self.cfg = _cfg()
