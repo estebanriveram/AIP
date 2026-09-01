@@ -5601,6 +5601,11 @@ class PortfolioOptimizer:
         if base_year is None:
             base_year = datetime.now().year
 
+        # Preselección por EAV: reduce cada grupo de exclusión a una sola
+        # alternativa ANTES de construir cualquier matriz — el resto del
+        # método nunca ve las alternativas descartadas.
+        projects, _preselect_descartados = _preselect_by_eav(projects, self.engine)
+
         n_proj = len(projects)
         n_years = len(budget_periods)
         year_map = {bp.year: t for t, bp in enumerate(budget_periods)}
@@ -5807,6 +5812,12 @@ class PortfolioOptimizer:
                         "project_name": proj.name,
                         "reason": "Sin cupo presupuestal en el horizonte"
                     })
+            for descartada, ganadora in _preselect_descartados:
+                postponed.append({
+                    "project_id": descartada.id,
+                    "project_name": descartada.name,
+                    "reason": f"Descartada por EAV frente a {ganadora.id}",
+                })
             selected.sort(key=lambda x: x["net_value_COP"], reverse=True)
 
         return PortfolioResult(

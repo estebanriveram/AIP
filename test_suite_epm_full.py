@@ -4406,6 +4406,47 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
         self.assertEqual({p.id for p in ganadores}, {"UNICA"})
         self.assertEqual(descartados, [])
 
+    def test_portfolio_simple_usa_preseleccion(self):
+        """La alternativa descartada por EAV nunca debe llegar a competir
+        por presupuesto (no debe aparecer en selected) — pero tampoco debe
+        desaparecer en silencio: debe aparecer en postponed con la razón
+        explícita (spec sección 6: 'no desaparecen en silencio, se reportan
+        con la razón')."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="OPT_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_OPT",
+        )
+        larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="OPT_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_OPT",
+        )
+        corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        periods = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+
+        ids_seleccionados = {s["project_id"] for s in result.selected}
+        self.assertNotIn(
+            "OPT_LARGA", ids_seleccionados,
+            "La alternativa de mayor VNT crudo pero menor EAV no debía "
+            "llegar a competir por presupuesto en absoluto.",
+        )
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "OPT_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe quedar visible en postponed, no "
+            "desaparecer en silencio (spec sección 6).",
+        )
+        self.assertIn("EAV", descartada["reason"])
+        self.assertIn("OPT_CORTA", descartada["reason"])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
