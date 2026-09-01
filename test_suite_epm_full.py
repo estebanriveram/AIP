@@ -4542,6 +4542,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
         # que esta prueba quiere ejercitar.
         periods = [ResourcePeriod(year=2026, budget_COP=0.0)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
+        self.assertEqual(result.solver_status, "INFEASIBLE")
         descartada = next(
             (p for p in result.postponed if p["project_id"] == "ENT_INF_LARGA"), None
         )
