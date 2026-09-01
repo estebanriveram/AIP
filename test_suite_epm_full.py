@@ -4447,6 +4447,39 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
         self.assertIn("EAV", descartada["reason"])
         self.assertIn("OPT_CORTA", descartada["reason"])
 
+    def test_portfolio_simple_descartada_por_eav_visible_aunque_infactible(self):
+        """Las descartadas por EAV deben reportarse en postponed incluso si
+        el solver resulta infactible (0 de presupuesto) — se conocen ANTES
+        de correr el solver, no dependen de que este tenga éxito."""
+        opt = PortfolioOptimizer(config=self.cfg)
+        sc_grande = _make_sc("VD-1-A", delta=30_000.0, price=335_000)
+        larga = _make_project(
+            pid="INF_LARGA", capex=50_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_grande])],
+            exclusion_group_id="NECESIDAD_INF",
+        )
+        larga.asset_type = "transformador_potencia"
+        sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
+        corta = _make_project(
+            pid="INF_CORTA", capex=8_000_000_000, exec_year=2026,
+            drivers=[_make_driver("VD-1", [sc_chica])],
+            exclusion_group_id="NECESIDAD_INF", is_mandatory=True,
+        )
+        corta.asset_type = "sistema_control_SCADA"
+        # Presupuesto 0: INF_CORTA (la ganadora por EAV, ahora obligatoria)
+        # no cabe en ningún lado — el solver debe reportar infactible.
+        periods = [BudgetPeriod(year=2026, budget_COP=0.0)]
+        result = opt.optimize([larga, corta], periods, base_year=2026)
+        self.assertEqual(result.solver_status, "INFEASIBLE")
+        descartada = next(
+            (p for p in result.postponed if p["project_id"] == "INF_LARGA"), None
+        )
+        self.assertIsNotNone(
+            descartada,
+            "La descartada por EAV debe seguir visible en postponed aunque "
+            "el solver resulte infactible.",
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME

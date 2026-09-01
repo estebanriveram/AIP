@@ -5812,13 +5812,19 @@ class PortfolioOptimizer:
                         "project_name": proj.name,
                         "reason": "Sin cupo presupuestal en el horizonte"
                     })
-            for descartada, ganadora in _preselect_descartados:
-                postponed.append({
-                    "project_id": descartada.id,
-                    "project_name": descartada.name,
-                    "reason": f"Descartada por EAV frente a {ganadora.id}",
-                })
             selected.sort(key=lambda x: x["net_value_COP"], reverse=True)
+
+        # Las descartadas por EAV se conocen ANTES de correr el solver — se
+        # reportan sin importar si este tuvo éxito o no. Si quedaran dentro
+        # del `if result.success:` de arriba, un solve infactible las haría
+        # desaparecer en silencio, contradiciendo la garantía de la sección
+        # 6 del spec ("no desaparecen en silencio, se reportan con la razón").
+        for descartada, ganadora in _preselect_descartados:
+            postponed.append({
+                "project_id": descartada.id,
+                "project_name": descartada.name,
+                "reason": f"Descartada por EAV frente a {ganadora.id}",
+            })
 
         return PortfolioResult(
             selected=selected,
