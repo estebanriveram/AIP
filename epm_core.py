@@ -1294,31 +1294,14 @@ INVESTMENT_TYPES = {
     "Crecimiento / Expansión": {
         "description": "Nuevas conexiones o ampliación de capacidad",
         "mandatory_sc": ["VD-3-A", "VD-3-B", "VD-3-C"],
-        "suggested_sc": ["VD-1-A", "VD-1-B", "VD-5-C", "VD-5-D", "VD-6-A"]
+        # VD-4-A/B/C (Protección Hídrica y Carbono Neutralidad) reubicados aquí
+        # el 4 de septiembre de 2026 (D-13) al eliminar "Sostenibilidad / ESG"
+        # — quedarían sin ningún tipo de inversión que los sugiriera. Como
+        # sugeridos, no obligatorios: no todo proyecto de expansión reduce
+        # emisiones o protege cuencas.
+        "suggested_sc": ["VD-1-A", "VD-1-B", "VD-4-A", "VD-4-B", "VD-4-C", "VD-5-C", "VD-5-D", "VD-6-A"]
         # VD-5-D: proyectos de expansión habilitan nuevos activos que CREG
         # reconoce a VRN → ingreso regulado anual = VRN_nuevo × tasa_CREG.
-    },
-    "Cumplimiento Regulatorio": {
-        "description": "Inversión requerida por norma CREG/CRA/ANLA",
-        "mandatory_sc": ["VD-5-A", "VD-4-C"],
-        "suggested_sc": ["VD-1-B", "VD-2-A", "VD-5-D", "VD-6-A"]
-        # VD-5-D: proyectos de cumplimiento frecuentemente habilitan activos
-        # nuevos (reemplazos, upgrades) reconocibles en la base regulatoria CREG.
-    },
-    "Eficiencia Operativa": {
-        "description": "Reducción de OPEX o pérdidas técnicas",
-        "mandatory_sc": ["VD-2-A"],
-        "suggested_sc": ["VD-2-B", "VD-2-C", "VD-1-A", "VD-5-A", "VD-6-A"]
-    },
-    "Sostenibilidad / ESG": {
-        "description": "Reducción huella ambiental y carbono",
-        "mandatory_sc": ["VD-4-A"],
-        "suggested_sc": ["VD-4-B", "VD-4-C", "VD-5-C", "VD-6-A"]
-    },
-    "Proyecto Empresarial / TI": {
-        "description": "Iniciativas tecnológicas o de transformación organizacional",
-        "mandatory_sc": ["VD-5-A", "VD-5-C"],
-        "suggested_sc": ["VD-2-A", "VD-3-A", "VD-6-A"]
     }
 }
 
@@ -10321,16 +10304,20 @@ _BU_MAP = {
 }
 
 _INV_TYPE_MAP = {
+    # D-13 (2026-09-04): las claves deben coincidir EXACTO con INVESTMENT_TYPES
+    # — "crecimiento"/"expansion" apuntaban a "Crecimiento/Expansión" (sin
+    # espacios) cuando la clave real es "Crecimiento / Expansión" (con
+    # espacios): nunca coincidían, bug preexistente sin relación con esta
+    # limpieza, corregido de paso. "Cumplimiento Regulatorio", "Eficiencia
+    # Operativa", "Sostenibilidad / ESG" y "Proyecto Empresarial / TI" se
+    # retiraron de INVESTMENT_TYPES — sus sinónimos se retiran también en vez
+    # de dejarlos apuntando a una clave que ya no existe.
     "reposición": "Reposición de Activos",  "reposicion": "Reposición de Activos",
     "reposición de activos": "Reposición de Activos",
-    "crecimiento": "Crecimiento/Expansión", "expansion": "Crecimiento/Expansión",
-    "crecimiento/expansión": "Crecimiento/Expansión",
-    "cumplimiento": "Cumplimiento Regulatorio",
-    "regulatorio": "Cumplimiento Regulatorio",
-    "eficiencia": "Eficiencia Operativa",
-    "esg": "ESG / Sostenibilidad",
-    "ti": "Proyecto Empresarial/TI", "it": "Proyecto Empresarial/TI",
-    "proyecto empresarial/ti": "Proyecto Empresarial/TI",
+    "crecimiento": "Crecimiento / Expansión", "expansion": "Crecimiento / Expansión",
+    "expansión": "Crecimiento / Expansión",
+    "crecimiento / expansión": "Crecimiento / Expansión",
+    "crecimiento/expansión": "Crecimiento / Expansión",
 }
 
 

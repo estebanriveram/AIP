@@ -40,7 +40,7 @@
     "optimizador": "PuLP + CBC (Enterprise). scipy HiGHS (legacy). Restricciones: presupuesto por vigencia, persona-mes, concurrencia, riesgo portafolio, dependencias.",
     "degradacion": "Motor Weibull/Lineal/Escalón/Acelerado. EEOL = año donde costo_mantener > costo_reemplazar. Alimenta Optimal Timing.",
     "trazabilidad": "SnapshotStore append-only con SHA-256. Exporta reporte ISO 55001 §4.5.5.",
-    "portafolio_ti": "Portafolio TI usa VD-2-A (OPEX evitado) como driver principal. CAPEX calibrado por impacto × talla. Tipo inversión: Proyecto Empresarial/TI | Eficiencia Operativa | Cumplimiento Regulatorio. Proyectos en Ejecución: is_mandatory=True. Proyectos en Formulación: is_mandatory=False.",
+    "portafolio_ti": "Portafolio TI usa VD-2-A (OPEX evitado) como driver principal. CAPEX calibrado por impacto x talla. D-13 (2026-09-04): el tipo de inversion \"Proyecto Empresarial/TI\" (y \"Eficiencia Operativa\", \"Cumplimiento Regulatorio\") se retiraron de INVESTMENT_TYPES -- proyectos TI se clasifican ahora bajo \"Reposicion de Activos\" o \"Crecimiento / Expansion\" segun corresponda. El pipeline standalone de TI (recalc_ti_risk.py, ti_projects.json) es independiente del motor y no se ve afectado. Proyectos en Ejecucion: is_mandatory=True. Proyectos en Formulacion: is_mandatory=False.",
     "bug_fixes_v3_3": [
       "MILP: nombres de restricción ahora incluyen índice numérico para evitar colisiones con IDs duplicados",
       "PortfolioLoader: aliases 'Código Proyecto Banco PeI' y 'Nombre Proyecto PeI' añadidos",
@@ -826,30 +826,6 @@
         "3": "Zona sin capacidad de conexion por meses. Reclamos ante el regulador.",
         "4": "Bloqueo del crecimiento en una region. Perdida de mercado y requerimiento regulatorio.",
         "5": "Incapacidad estructural de atender la demanda. Riesgo de franquicia o intervencion."
-      },
-      "Cumplimiento Regulatorio": {
-        "_evento": "la sancion del ente regulador por incumplir",
-        "1": "Hallazgo menor subsanable en el plazo ordinario. Sin multa.",
-        "2": "Requerimiento formal con plan de accion. Amonestacion o multa baja.",
-        "3": "Sancion economica con plan de cumplimiento supervisado.",
-        "4": "Sancion significativa con seguimiento especial del regulador.",
-        "5": "Sancion maxima, suspension de actividad o riesgo sobre la concesion."
-      },
-      "ESG / Sostenibilidad": {
-        "_evento": "el incidente ambiental o social",
-        "1": "Afectacion contenida sin dano al entorno. Sin reporte externo.",
-        "2": "Incidente localizado con remediacion rapida. Reporte a la autoridad ambiental.",
-        "3": "Dano ambiental reversible. Multa ambiental y atencion a la comunidad.",
-        "4": "Dano ambiental significativo. Sancion ANLA, conflicto social y cobertura mediatica.",
-        "5": "Dano irreversible al ecosistema o a la comunidad. Crisis institucional."
-      },
-      "Proyecto Empresarial/TI": {
-        "_evento": "la indisponibilidad u obsolescencia del sistema",
-        "1": "Degradacion de servicio imperceptible para el usuario.",
-        "2": "Indisponibilidad breve de un sistema no critico.",
-        "3": "Caida de un sistema de soporte a la operacion durante horas.",
-        "4": "Caida de un sistema critico. Afectacion a la operacion y a la facturacion.",
-        "5": "Perdida de sistemas criticos o de datos. Continuidad del negocio comprometida."
       }
     }
   },
@@ -1242,169 +1218,6 @@
           "VD-1-H",
           "VD-5-A",
           "VD-4-A"
-        ]
-      },
-      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
-    },
-    "Cumplimiento Regulatorio": {
-      "description": "Requerido por CREG, ANLA u otro ente regulador",
-      "mandatory_sc": [
-        "VD-5-A"
-      ],
-      "suggested_sc": [
-        "VD-4-C",
-        "VD-2-A",
-        "VD-1-F"
-      ],
-      "_nota": "is_mandatory=True por defecto. VD-5-A captura multas evitadas",
-      "mandatory_sc_by_bu": {
-        "TyD": [
-          "VD-5-D"
-        ],
-        "AyA": [
-          "VD-5-E"
-        ],
-        "Gas": [
-          "VD-5-E"
-        ],
-        "Generacion": [
-          "VD-5-A"
-        ]
-      },
-      "suggested_sc_by_bu": {
-        "TyD": [
-          "VD-2-A"
-        ],
-        "AyA": [
-          "VD-4-B",
-          "VD-2-A"
-        ],
-        "Gas": [
-          "VD-2-A"
-        ],
-        "Generacion": [
-          "VD-4-B",
-          "VD-2-A"
-        ]
-      },
-      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
-    },
-    "Eficiencia Operativa": {
-      "description": "Reducir OPEX o pérdidas operativas",
-      "mandatory_sc": [
-        "VD-2-A"
-      ],
-      "suggested_sc": [
-        "VD-2-C",
-        "VD-2-B",
-        "VD-1-A",
-        "VD-5-C"
-      ],
-      "_nota": "Driver principal siempre VD-2-A. OPEX evitado en COP/año",
-      "mandatory_sc_by_bu": {
-        "TyD": [
-          "VD-2-A"
-        ],
-        "AyA": [
-          "VD-2-A"
-        ],
-        "Gas": [
-          "VD-2-A"
-        ],
-        "Generacion": [
-          "VD-2-A"
-        ]
-      },
-      "suggested_sc_by_bu": {
-        "TyD": [
-          "VD-1-A"
-        ],
-        "AyA": [
-          "VD-1-C"
-        ],
-        "Gas": [
-          "VD-1-E"
-        ],
-        "Generacion": [
-          "VD-1-G"
-        ]
-      },
-      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
-    },
-    "ESG / Sostenibilidad": {
-      "description": "Carbono, protección hídrica, social",
-      "mandatory_sc": [
-        "VD-4-A"
-      ],
-      "suggested_sc": [
-        "VD-4-B",
-        "VD-4-C",
-        "VD-1-F"
-      ],
-      "_nota": "VD-4-A tCO2eq + VD-4-B ha ecosistemas + VD-4-C multas ANLA",
-      "mandatory_sc_by_bu": {
-        "TyD": [
-          "VD-4-A"
-        ],
-        "AyA": [
-          "VD-4-A"
-        ],
-        "Gas": [
-          "VD-4-A"
-        ],
-        "Generacion": [
-          "VD-4-A"
-        ]
-      },
-      "suggested_sc_by_bu": {
-        "TyD": [],
-        "AyA": [
-          "VD-4-B"
-        ],
-        "Gas": [],
-        "Generacion": [
-          "VD-4-B"
-        ]
-      },
-      "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."
-    },
-    "Proyecto Empresarial/TI": {
-      "description": "Sistemas de información, plataformas digitales, transformación TI",
-      "mandatory_sc": [
-        "VD-2-A"
-      ],
-      "suggested_sc": [
-        "VD-5-C",
-        "VD-5-A",
-        "VD-1-F"
-      ],
-      "_nota": "Driver principal: VD-2-A (OPEX evitado por automatización). VD-5-C para proyectos de rentabilidad/productividad. VD-5-A para proyectos regulatorios TI. bu_filter=Todos — aplica a todos los negocios.",
-      "mandatory_sc_by_bu": {
-        "TyD": [
-          "VD-2-A"
-        ],
-        "AyA": [
-          "VD-2-A"
-        ],
-        "Gas": [
-          "VD-2-A"
-        ],
-        "Generacion": [
-          "VD-2-A"
-        ]
-      },
-      "suggested_sc_by_bu": {
-        "TyD": [
-          "VD-5-D"
-        ],
-        "AyA": [
-          "VD-5-E"
-        ],
-        "Gas": [
-          "VD-5-E"
-        ],
-        "Generacion": [
-          "VD-5-A"
         ]
       },
       "_nota_by_bu": "mandatory_sc/suggested_sc usan la numeracion generica del VFDD. Las listas *_by_bu son las que realmente aplican en cada negocio, resueltas contra bu_driver_config. Usar estas."

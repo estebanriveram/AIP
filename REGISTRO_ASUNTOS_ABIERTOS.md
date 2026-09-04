@@ -951,6 +951,65 @@ recalcule en consecuencia.
 
 ---
 
+### D-13 · Se retiran 4 de los 6 Tipos de Inversión — VD-4 reubicado en Crecimiento/Expansión
+
+Decisión del usuario (2026-09-04), durante el diseño del registro de
+activos y componentes múltiples de inacción: de los 6 Tipos de Inversión
+que existían (`INVESTMENT_TYPES`), se retiran **Cumplimiento
+Regulatorio**, **Eficiencia Operativa**, **Sostenibilidad / ESG** y
+**Proyecto Empresarial / TI** — quedan solo **Reposición de Activos** y
+**Crecimiento / Expansión**. Motivo: no se les vio valor diferencial
+frente a los dos que quedan.
+
+**Verificado antes de ejecutar, no solo antes de opinar:**
+
+- **Huérfanos de Retos de valor** — se cruzaron los `mandatory_sc`/
+  `suggested_sc` de los 4 tipos retirados contra los 2 que sobreviven.
+  Resultado: los 3 sub-criterios del Reto 4 completo (VD-4-A emisiones
+  GEI, VD-4-B protección hídrica, VD-4-C multas ambientales) quedaban sin
+  ningún tipo de inversión que los sugiriera — Reto 4 entero perdía su
+  única puerta de entrada. **Decisión del usuario: reubicar los 3 en
+  Crecimiento / Expansión**, como `suggested_sc` (no `mandatory_sc` — no
+  todo proyecto de expansión reduce emisiones). VD-2-B (pérdidas de gas) y
+  VD-2-C (pérdidas técnicas eléctricas) sí quedan huérfanos — decisión
+  explícita del usuario de no reubicarlos.
+- **Riesgo real evaluado, no solo mencionado**: existe un portafolio TI
+  real y grande (`ti_projects.json`, 426 proyectos; `ti_milp_result.json`,
+  385 seleccionados) que usa `"tipo": "Eficiencia Operativa"` como texto
+  libre. Verificado que `recalc_ti_risk.py`/`generate_dashboard.py` — el
+  pipeline que los procesa — **no importa `epm_core`** y no toca
+  `INVESTMENT_TYPES` en ningún punto: es un sistema standalone,
+  desacoplado del motor. El riesgo que se había planteado (romper ese
+  portafolio) no era real — verificado, no asumido.
+- **Bug preexistente encontrado y corregido de paso, sin relación con
+  este retiro**: `_INV_TYPE_MAP` (sinónimos de texto libre para
+  importación) apuntaba a `"Crecimiento/Expansión"` (sin espacios) cuando
+  la clave real en `INVESTMENT_TYPES` siempre fue `"Crecimiento /
+  Expansión"` (con espacios) — nunca coincidían. Corregido.
+- **Datos muertos encontrados y limpiados**: `config.json` tenía su
+  propia sección `investment_types` y `risk_matrix
+  .consequence_anchors_by_inv_type`, con nombres de clave que tampoco
+  coincidían con `INVESTMENT_TYPES` del motor (`"ESG / Sostenibilidad"`
+  vs. `"Sostenibilidad / ESG"`, invertidos). Verificado con `grep` que
+  ninguna de las dos secciones se lee en ningún punto del código — eran
+  datos huérfanos desde antes de este cambio, no algo que este retiro
+  haya roto. Se limpiaron las entradas de los 4 tipos retirados de ambas
+  secciones de todas formas, por prolijidad.
+
+**Ejecutado:** `INVESTMENT_TYPES` en `epm_core.py` reducido a 2 entradas;
+`_INV_TYPE_MAP` corregido y con los sinónimos de los 4 tipos retirados
+eliminados; `config.json` limpiado (secciones muertas + nota de
+`_metodologia.portafolio_ti` actualizada); 5 pruebas de
+`test_suite_epm_full.py` que usaban los 4 tipos retirados como etiqueta
+de escenario (ninguna dependía del tipo para su aserción real — se
+verificó que `investment_type` nunca alimenta ningún cálculo, solo es una
+etiqueta de reporte) se reasignaron a los 2 tipos que quedan. Verificado
+en vivo en el asistente: el desplegable "Tipo de Inversión" muestra
+exactamente 2 opciones. Suite: 272/272 en verde, sin cambios de conteo
+(mismas pruebas, reasignadas, ninguna eliminada).
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -999,6 +1058,10 @@ recalcule en consecuencia.
 | D-11 VD-6 es una decisión de EPM, no algo que Copperleaf documente | DOC-RISK §3.3 | Documentado, decisión consciente del usuario |
 | D-12 `consequence_levels_by_bu` no coincidía con la suma de su propio desglose por tipo (hasta -45% en L5) | Suite, grupo S25 (guardián nuevo) | **Cerrado — recalculado como suma exacta** |
 | D-12 `consequence_types_matrix` (el desglose en sí) sigue sin calibrar formalmente con ningún negocio | `epm_core.py → DEFAULT_CONFIG`, nunca en `config.json` | **Abierto — pendiente sesión con Gestión del Riesgo EPM** |
+| D-13 Se retiran 4 de 6 Tipos de Inversión (Cumplimiento Regulatorio, Eficiencia Operativa, Sostenibilidad/ESG, Proyecto Empresarial/TI) | `epm_core.py → INVESTMENT_TYPES` | **Cerrado — decisión del usuario, 272/272 pruebas en verde** |
+| D-13 VD-4 (Reto 4 completo) reubicado en Crecimiento/Expansión como `suggested_sc` — sin eso quedaba huérfano | `epm_core.py → INVESTMENT_TYPES["Crecimiento / Expansión"]` | **Cerrado** |
+| D-13 VD-2-B/VD-2-C quedan huérfanos de todo tipo de inversión — decisión explícita de no reubicarlos | `epm_core.py → INVESTMENT_TYPES` | Documentado, decisión consciente del usuario |
+| D-13 `_INV_TYPE_MAP` con sinónimos que nunca coincidían con las claves reales (bug preexistente, sin relación con este retiro) | `epm_core.py → _INV_TYPE_MAP` | **Cerrado** |
 
 ---
 

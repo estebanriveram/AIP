@@ -1678,14 +1678,10 @@ class S18_PortfolioTI_Alcances(unittest.TestCase):
         self.opt = EnterpriseOptimizer(config=self.cfg)
 
     def test_all_investment_types_evaluate(self):
-        """Los 6 tipos de inversion se evaluan sin error."""
+        """Los 2 tipos de inversion (D-13: se retiraron los otros 4) se evaluan sin error."""
         inv_types = [
             "Reposicion de Activos",
             "Crecimiento / Expansion",
-            "Cumplimiento Regulatorio",
-            "Eficiencia Operativa",
-            "Sostenibilidad / ESG",
-            "Proyecto Empresarial / TI",
         ]
         for inv in inv_types:
             p = _make_project(inv_type=inv, bu="Todos", capex=2_000_000_000)
@@ -1727,12 +1723,13 @@ class S18_PortfolioTI_Alcances(unittest.TestCase):
         self.assertNotEqual(result.solver_status, "ERROR")
 
     def test_ti_project_vd2a_positive_vnt(self):
-        """Proyecto TI con VD-2-A OPEX evitado genera VNT positivo."""
+        """Proyecto tipo TI (D-13: clasificado como Reposicion de Activos,
+        ya no existe un tipo propio) con VD-2-A OPEX evitado genera VNT positivo."""
         sc = _make_sc("VD-2-A", sc_type="monetizable",
                       delta=1_000_000_000.0, price=1.0)
         p  = _make_project(
             "TI_001", bu="Todos",
-            inv_type="Proyecto Empresarial / TI",
+            inv_type="Reposicion de Activos",
             capex=500_000_000,
             drivers=[_make_driver("VD-2", [sc])],
         )
@@ -1863,7 +1860,7 @@ class S20_FullIntegration(unittest.TestCase):
 
         # TyD: Hijo con lag=1 (R3b)
         p3 = _make_project(
-            "TYD_HIJO_003", bu="TyD", inv_type="Eficiencia Operativa",
+            "TYD_HIJO_003", bu="TyD", inv_type="Reposicion de Activos",
             capex=5_000_000_000, exec_year=2027,
             precedent_id="TYD_CREC_002", min_lag=1,
             drivers=[_make_driver("VD-2", [
@@ -1900,7 +1897,7 @@ class S20_FullIntegration(unittest.TestCase):
         # Gas: Grupo exclusivo (R3d)
         for i in range(2):
             pg = _make_project(
-                f"GAS_ESG_00{i+1}", bu="Gas", inv_type="Sostenibilidad / ESG",
+                f"GAS_ESG_00{i+1}", bu="Gas", inv_type="Crecimiento / Expansion",
                 capex=6_000_000_000,
                 exclusion_group_id="GAS_ESG_GRP",
                 drivers=[_make_driver("VD-4", [
@@ -1927,7 +1924,7 @@ class S20_FullIntegration(unittest.TestCase):
 
         # TyD: Comprometido R11
         p9 = _make_project(
-            "TYD_COMM_001", bu="TyD", inv_type="Cumplimiento Regulatorio",
+            "TYD_COMM_001", bu="TyD", inv_type="Reposicion de Activos",
             capex=7_000_000_000, is_committed=True, committed_year=2027,
             is_mandatory=True,
             drivers=[_make_driver("VD-5", [
@@ -1938,7 +1935,7 @@ class S20_FullIntegration(unittest.TestCase):
 
         # TI: Proyecto Empresarial
         p10 = _make_project(
-            "TI_ERP_001", bu="Todos", inv_type="Proyecto Empresarial / TI",
+            "TI_ERP_001", bu="Todos", inv_type="Reposicion de Activos",
             capex=2_000_000_000,
             drivers=[_make_driver("VD-2", [
                 _make_sc("VD-2-A", delta=800_000_000.0, price=1.0),
