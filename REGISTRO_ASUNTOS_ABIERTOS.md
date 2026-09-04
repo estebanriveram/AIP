@@ -896,6 +896,61 @@ debería competir contra otro?).
 
 ---
 
+### D-12 · `consequence_levels_by_bu` no era la suma de su propio desglose por tipo
+
+Encontrado preparando el informe de trazabilidad de riesgo para la sesión
+de validación con AyA (2026-09-03) — al documentar "dato a dato" cómo se
+llega a cada valor de consecuencia, verificar la tabla agregada
+(`consequence_levels_by_bu`, la que el motor resuelve primero) contra su
+propio desglose detallado (`consequence_types_matrix`: financiero, H&S,
+ambiental, regulatorio, reputacional — por BU y nivel) reveló que dejaron
+de coincidir.
+
+**Root cause, verificado antes de tocar nada:** antes de Reto 6,
+`consequence_levels_by_bu` **era**, por diseño, la suma exacta de los 5
+tipos del desglose — verificado contra los valores "ORIGINAL (con
+reputación)" que la nota `_estimado_reputacion` de D-11 dejó registrados:
+coinciden en 19 de 20 casos (4 BU × 5 niveles; la única diferencia, en
+L1 de AyA y Generación, es de ≤10 MM COP, ruido histórico menor, no el
+patrón). Al retirar el componente reputacional en D-11, la aproximación
+usada — aplicar la misma *proporción* de reducción que la tabla plana
+genérica ("Todos") — rompió esa identidad: la proporción de la tabla
+genérica no es la de cada BU real, así que el resultado dejó de ser la
+suma de las partes. La brecha crece con la severidad y es sustancial:
+hasta **-45 %** en el nivel catastrófico de AyA y TyD (45.000 MM vs.
+82.000 MM en AyA; 27.000 MM vs. 49.000 MM en TyD).
+
+**Corrección:** `consequence_levels_by_bu[BU][nivel].value_COP` se
+recalculó como la suma EXACTA de `consequence_types_matrix` (financiero +
+H&S + ambiental + regulatorio, sin reputacional) para las 4 BU × 5
+niveles — 20 valores, en `config.json` y en `DEFAULT_CONFIG`
+(`epm_core.py`), sincronizados. La nota `_estimado_reputacion` de cada
+entrada se actualizó para documentar el método nuevo y remite a esta
+entrada. Se agregó un guardián permanente
+(`test_consequence_levels_by_bu_es_la_suma_exacta_del_desglose_por_tipo`,
+grupo S25) que falla si la tabla agregada vuelve a desincronizarse de su
+propio desglose — confirmado que falla contra los valores viejos antes
+del fix, y pasa contra los nuevos. Se actualizaron los valores esperados
+de `test_matriz_riesgo_por_negocio_ya_no_cobra_componente_reputacional`
+(D-11) para reflejar los montos corregidos. Suite: 271 → 272 (+1).
+269/269 pruebas preexistentes siguieron en verde sin recalibrar nada más
+— a diferencia de D-11, este cambio (subir el riesgo mitigado) no
+reabrió el defecto histórico que vigila S21.
+
+**No es una validación de negocio, es una corrección de consistencia
+interna** — el desglose detallado (`consequence_types_matrix`) en sí
+mismo sigue siendo el mismo dato sin calibrar formalmente con AyA que
+D-11 ya dejó documentado (vive solo en `DEFAULT_CONFIG`, nunca pasó por
+`config.json` ni por una sesión de calibración con Gestión del Riesgo
+EPM). Este fix solo garantiza que la tabla agregada sea, matemáticamente,
+lo que siempre debió ser: la suma de sus propias partes. Si AyA (o
+cualquier otro negocio) determina en su validación que alguno de los 5
+tipos del desglose está mal calibrado, ese es un ajuste de dato distinto
+— el guardián nuevo seguiría exigiendo que la tabla agregada se
+recalcule en consecuencia.
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -940,8 +995,10 @@ debería competir contra otro?).
 | D-11 VD-6 Reputación — brecha real de doble conteo (`consequence_levels_by_bu` ausente) | Suite, grupo S25 | **Cerrado** |
 | D-11 Recalibración de S21 que dejó de detectar el defecto histórico (error propio, corregido) | Suite, grupo S21 (meta-prueba nueva) | **Cerrado** |
 | D-11 `config.json`/`DEFAULT_CONFIG` desincronizados — segunda vez | Suite, grupo S25 (prueba de sincronía) | **Cerrado para Reto 6 · deuda estructural abierta** |
-| D-11 `consequence_levels_by_bu` sin desglose reputacional propio — estimación aplicada | `config.json → risk_matrix.consequence_levels_by_bu[*]._estimado_reputacion` | **Abierto — pendiente validar con Gestión del Riesgo EPM** |
+| D-11 `consequence_levels_by_bu` sin desglose reputacional propio — estimación aplicada | Ver D-12 | **Cerrado por D-12 — corregido, no solo estimado** |
 | D-11 VD-6 es una decisión de EPM, no algo que Copperleaf documente | DOC-RISK §3.3 | Documentado, decisión consciente del usuario |
+| D-12 `consequence_levels_by_bu` no coincidía con la suma de su propio desglose por tipo (hasta -45% en L5) | Suite, grupo S25 (guardián nuevo) | **Cerrado — recalculado como suma exacta** |
+| D-12 `consequence_types_matrix` (el desglose en sí) sigue sin calibrar formalmente con ningún negocio | `epm_core.py → DEFAULT_CONFIG`, nunca en `config.json` | **Abierto — pendiente sesión con Gestión del Riesgo EPM** |
 
 ---
 

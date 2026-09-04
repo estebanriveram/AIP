@@ -3100,12 +3100,17 @@ class S25_FuncionDeValor(unittest.TestCase):
         el valor sin componente reputacional — verificado leyendo
         directamente consequence_levels_by_bu, la tabla que _calc_risk()
         realmente resuelve primero según la jerarquía documentada
-        (consequence_levels_by_bu[BU] > consequence_levels > respaldo)."""
+        (consequence_levels_by_bu[BU] > consequence_levels > respaldo).
+
+        Valores actualizados por D-12 (2026-09-03): ver
+        test_consequence_levels_by_bu_es_la_suma_exacta_del_desglose_por_tipo
+        para la corrección de fondo — este test solo confirma que el
+        componente reputacional sigue fuera, con los valores ya corregidos."""
         esperados = {
-            "TyD":        {"1": 44_687_500,    "5": 27_000_000_000},
-            "Generacion": {"1": 68_750_000,    "5": 41_000_000_000},
-            "AyA":        {"1": 37_812_500,    "5": 45_000_000_000},
-            "Gas":        {"1": 37_812_500,    "5": 23_000_000_000},
+            "TyD":        {"1": 45_000_000,    "5": 49_000_000_000},
+            "Generacion": {"1": 80_000_000,    "5": 62_000_000_000},
+            "AyA":        {"1": 45_000_000,    "5": 82_000_000_000},
+            "Gas":        {"1": 45_000_000,    "5": 40_000_000_000},
         }
         tabla = self.cfg["risk_matrix"]["consequence_levels_by_bu"]
         for bu, niveles in esperados.items():
@@ -3156,6 +3161,41 @@ class S25_FuncionDeValor(unittest.TestCase):
                 f"'{inv_type}' no sugiere VD-6-A — Reto 6 quedaría inalcanzable "
                 f"desde el asistente para este tipo de inversión.",
             )
+
+    def test_consequence_levels_by_bu_es_la_suma_exacta_del_desglose_por_tipo(self):
+        """Guardián permanente (D-12): consequence_levels_by_bu[BU][nivel] debe
+        ser EXACTAMENTE la suma de consequence_types_matrix (financiero + hs +
+        ambiental + regulatorio, SIN reputacional — ya vive en VD-6) para esa
+        misma BU y nivel — no una aproximación.
+
+        Antes del ajuste D-12, la reducción por Reto 6 se calculó aplicando la
+        misma proporción de reducción que la tabla plana genérica ('Todos'),
+        en vez de restar directamente el componente reputacional del propio
+        desglose de cada BU. Verificado contra las 4 BU antes del fix: la
+        tabla plana coincidía exactamente con la suma de los 5 tipos (con
+        reputación) en 19 de 20 casos — confirmando que consequence_levels_by_bu
+        SIEMPRE fue, por diseño, una suma derivada del desglose, no un dato
+        calibrado de forma independiente. La aproximación por proporción
+        genérica introdujo una brecha creciente con la severidad (hasta -45%
+        en el nivel catastrófico de AyA y TyD) — encontrada al preparar el
+        informe de trazabilidad de riesgo para la validación de AyA."""
+        ctm = self.cfg["risk_matrix"]["consequence_types_matrix"]
+        clb = self.cfg["risk_matrix"]["consequence_levels_by_bu"]
+        tipos_sin_reputacion = ["financiero", "hs", "ambiental", "regulatorio"]
+        for bu in ("TyD", "Generacion", "AyA", "Gas"):
+            for nivel in ("1", "2", "3", "4", "5"):
+                suma_tipos = sum(
+                    ctm[t]["levels_by_bu"][bu][nivel]["value_COP"]
+                    for t in tipos_sin_reputacion
+                )
+                oficial = clb[bu][nivel]["value_COP"]
+                self.assertAlmostEqual(
+                    oficial, suma_tipos, delta=1.0,
+                    msg=f"consequence_levels_by_bu[{bu}][{nivel}] ({oficial:,.0f}) "
+                        f"no coincide con la suma de su propio desglose por tipo "
+                        f"sin reputación ({suma_tipos:,.0f}) — la tabla agregada "
+                        f"se desincronizó de su fuente.",
+                )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -993,64 +993,68 @@ DEFAULT_CONFIG = {
         # C4 (Mayor):      CoF < 30,000M → falla sistémica + fatalidad + sanción CREG
         # C5 (Catastrófico):CoF ≥ 30,000M→ evento multi-subestación + crisis institucional
         "cof_level_thresholds_mm": [150, 1_000, 7_000, 30_000],  # límites C1/C2 … C4/C5 (MM COP)
-        # ── Totales por BU (suma de los 5 tipos por nivel) ──────────────────────────────
+        # ── Totales por BU (suma de los 4 tipos por nivel, sin reputacional) ────────────
         # Usados como CoF agregado cuando el modelo no tiene desglose por tipo.
         # Recalibrados para reflejar la nueva metodología por marco de valor por negocio.
         # NOTA (Reto 6 — Reputación, VD-6): value_COP de esta tabla ya NO incluye
-        # componente reputacional. Reducido aplicando la misma proporción reputacional
-        # por nivel que existe en config.json's risk_matrix.consequence_levels (tabla
-        # plana) — esta tabla por-negocio nunca tuvo desglose propio directo/regulatorio/
-        # reputacional, así que es una ESTIMACIÓN, no un dato calibrado directamente.
-        # Pendiente de validar con Gestión del Riesgo EPM. Debe permanecer sincronizada
-        # con risk_matrix.consequence_levels_by_bu en config.json.
+        # componente reputacional (vive en VD-6, para no contarla dos veces).
+        # NOTA (D-12, 2026-09-03): value_COP recalculado como suma EXACTA de
+        # consequence_types_matrix (financiero+hs+ambiental+regulatorio, sin
+        # reputacional) para cada BU y nivel. Reemplaza la aproximación de Reto 6,
+        # que aplicaba la misma proporción de reducción de la tabla plana genérica
+        # ("Todos") en vez de restar el propio desglose de cada BU — eso producía
+        # una brecha creciente con la severidad (hasta -45% en el nivel catastrófico
+        # de AyA y TyD). Encontrado al preparar el informe de trazabilidad de riesgo
+        # para AyA — ver REGISTRO_ASUNTOS_ABIERTOS.md D-12. Debe permanecer
+        # sincronizada con risk_matrix.consequence_levels_by_bu en config.json.
         "consequence_levels_by_bu": {
             "TyD": {
-                "1": {"label": "Muy Menor",    "value_COP":    44_687_500,
+                "1": {"label": "Muy Menor",    "value_COP":    45_000_000,
                       "_ancla": "Reparacion menor. ENS < 1 MWh. Sin penalidad CREG."},
-                "2": {"label": "Menor",        "value_COP":   275_000_000,
+                "2": {"label": "Menor",        "value_COP":   340_000_000,
                       "_ancla": "Falla alimentador. ENS ~5 MWh + reparacion + lesion leve."},
-                "3": {"label": "Moderado",     "value_COP": 2_242_500_000,
+                "3": {"label": "Moderado",     "value_COP": 2_950_000_000,
                       "_ancla": "Falla subestacion menor. ENS + reparacion + multa CREG + ambiental."},
-                "4": {"label": "Mayor",        "value_COP": 9_916_666_667,
+                "4": {"label": "Mayor",        "value_COP": 15_000_000_000,
                       "_ancla": "Falla subestacion mayor. ENS significativa + sancion CREG + fatalidad."},
-                "5": {"label": "Catastrofico", "value_COP": 27_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 49_000_000_000,
                       "_ancla": "Evento multi-subestacion. ENS masiva + sancion maxima CREG + crisis institucional TyD."},
             },
             "Generacion": {
-                "1": {"label": "Muy Menor",    "value_COP":    68_750_000,
+                "1": {"label": "Muy Menor",    "value_COP":    80_000_000,
                       "_ancla": "Indisponibilidad <4h. Sin penalidad ENFICC."},
-                "2": {"label": "Menor",        "value_COP":   437_500_000,
+                "2": {"label": "Menor",        "value_COP":   550_000_000,
                       "_ancla": "Despacho perdido 1-2 dias. Penalidad ENFICC + reparacion."},
-                "3": {"label": "Moderado",     "value_COP": 3_250_000_000,
+                "3": {"label": "Moderado",     "value_COP": 3_500_000_000,
                       "_ancla": "Planta fuera 1-4 semanas. Lucro cesante + penalidad ENFICC + ambiental."},
-                "4": {"label": "Mayor",        "value_COP": 16_625_000_000,
+                "4": {"label": "Mayor",        "value_COP": 20_500_000_000,
                       "_ancla": "Dano catastrofico activo. Indisponibilidad 6-12 meses + fatalidad + sancion CREG + spread crediticio."},
-                "5": {"label": "Catastrofico", "value_COP": 41_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 62_000_000_000,
                       "_ancla": "Destruccion planta/presa. Perdida total ENFICC + multiples victimas + impacto capital markets. Ref. Hidroituango."},
             },
             "AyA": {
-                "1": {"label": "Muy Menor",    "value_COP":    37_812_500,
+                "1": {"label": "Muy Menor",    "value_COP":    45_000_000,
                       "_ancla": "Fuga menor contenida. Sin afectacion a usuarios ni fuente hidrica."},
-                "2": {"label": "Menor",        "value_COP":   200_000_000,
+                "2": {"label": "Menor",        "value_COP":   240_000_000,
                       "_ancla": "Rotura tuberia secundaria. Carrotanque + reparacion + reporte CRA."},
-                "3": {"label": "Moderado",     "value_COP": 1_560_000_000,
+                "3": {"label": "Moderado",     "value_COP": 2_000_000_000,
                       "_ancla": "Averia PTAR o red troncal. Emergencia usuarios + brote leve + multa CRA + ANLA."},
-                "4": {"label": "Mayor",        "value_COP": 11_958_333_333,
+                "4": {"label": "Mayor",        "value_COP": 18_000_000_000,
                       "_ancla": "Colapso infraestructura + brote hidrico significativo + medida SSPD + crisis publica."},
-                "5": {"label": "Catastrofico", "value_COP": 45_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 82_000_000_000,
                       "_ancla": "Colapso sistema hidrico regional + epidemia + riesgo concesion + intervencion estatal. "
                                 "AyA L5 es el mayor de todos los BU por la escala de salud publica."},
             },
             "Gas": {
-                "1": {"label": "Muy Menor",    "value_COP":    37_812_500,
+                "1": {"label": "Muy Menor",    "value_COP":    45_000_000,
                       "_ancla": "Fuga menor contenida. Sin evacuacion. Sin reporte obligatorio."},
-                "2": {"label": "Menor",        "value_COP":   175_000_000,
+                "2": {"label": "Menor",        "value_COP":   240_000_000,
                       "_ancla": "Corte sector. Reparacion urgente + reporte ANLA + multa MinMinas."},
-                "3": {"label": "Moderado",     "value_COP": 1_170_000_000,
+                "3": {"label": "Moderado",     "value_COP": 1_500_000_000,
                       "_ancla": "Explosion menor. Heridos comunidad + ambiental + multa MinMinas + cobertura medios."},
-                "4": {"label": "Mayor",        "value_COP": 6_708_333_333,
+                "4": {"label": "Mayor",        "value_COP": 9_500_000_000,
                       "_ancla": "Explosion con fatalidades residenciales + dano infraestructura + suspension franquicia + crisis imagen."},
-                "5": {"label": "Catastrofico", "value_COP": 23_000_000_000,
+                "5": {"label": "Catastrofico", "value_COP": 40_000_000_000,
                       "_ancla": "Desastre explosion masiva. Multiples victimas residenciales + revocacion franquicia + crisis institucional."},
             },
         },
