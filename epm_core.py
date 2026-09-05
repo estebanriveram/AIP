@@ -5145,6 +5145,12 @@ class ProjectWizard:
         if include_risk != "n":
             risk_input = self._capture_risk()
 
+        # 6b. Horizonte de análisis (D-14) — sin default precargado: el
+        # analista debe declararlo, igual que en el asistente Streamlit.
+        print()
+        print(c("  HORIZONTE DE ANÁLISIS", Colors.BOLD))
+        analysis_horizon = ask("Horizonte de análisis (años)", cast=int, required=True)
+
         # 7. Dependencias
         deps = []
         print()
@@ -5198,7 +5204,8 @@ class ProjectWizard:
             execution_year=exec_year,
             optimal_year=opt_year,
             drivers=driver_inputs,
-            risk=risk_input,
+            risk_components=[risk_input] if risk_input else [],
+            analysis_horizon_years=analysis_horizon,
             dependencies=deps,
             is_mandatory=is_mandatory,
             construction_years=construction_years,
