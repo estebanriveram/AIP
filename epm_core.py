@@ -4070,9 +4070,9 @@ class ValueEngine:
         Retorna None si el tipo no tiene parámetros configurados (usar exponencial).
 
         Uso sugerido (en evaluate() o ProjectWizard):
-            params = engine._get_weibull_params_for_asset(project.asset_type)
+            params = engine._get_weibull_params_for_asset(component.asset_type)
             if params:
-                project.risk.weibull_beta, project.risk.weibull_eta = params
+                component.weibull_beta, component.weibull_eta = params
         """
         ot = self.config.get("optimal_timing", {})
         wp = ot.get("weibull_params_by_asset", {})
