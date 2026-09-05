@@ -10368,7 +10368,10 @@ class AssetRegistryStore:
         return result
 
     def search(self, query: str) -> List[AssetProfile]:
-        """Substring simple en asset_id o asset_name, insensible a mayúsculas."""
+        """Substring simple en asset_id o asset_name, insensible a mayúsculas.
+
+        A diferencia de list(), SÍ incluye activos retirados — una búsqueda
+        de auditoría no debería ocultar un activo solo porque fue retirado."""
         q = query.lower()
         return [
             a for a in self.list(include_retired=True)

@@ -5213,6 +5213,24 @@ class S35_AssetRegistryStore(unittest.TestCase):
         self.assertEqual(len(importados), 0)
         self.assertEqual(len(errores), 1)
 
+    def test_import_csv_fila_valida_se_importa_aunque_otra_fila_sea_duplicada(self):
+        """Una fila invalida (duplicada) no debe bloquear la importacion de
+        las demas filas validas del mismo archivo — el reporte es por fila,
+        no todo-o-nada."""
+        import io
+        self.store.create(self._activo("AyA-TUB-030"))
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-030,Duplicado,tuberia_ac,AyA,2010\n"
+            "AyA-TUB-031,Valida,tuberia_ac,AyA,2012\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 1)
+        self.assertEqual(importados[0].asset_id, "AyA-TUB-031")
+        self.assertEqual(len(errores), 1)
+        self.assertEqual(errores[0]["asset_id"], "AyA-TUB-030")
+        self.assertIsNotNone(self.store.get("AyA-TUB-031"))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
