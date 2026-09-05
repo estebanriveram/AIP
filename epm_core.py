@@ -7525,14 +7525,21 @@ class EnterpriseOptimizer:
             _asset_mit_map: dict = {}
             for i, proj in enumerate(projects):
                 aid = getattr(proj, "asset_id", "") or ""
-                if not aid or not proj.risk:
+                if not aid or not proj.risk_components:
                     continue
-                bl_level = self._risk_matrix_level(
-                    proj.risk.baseline_consequence_level,
-                    proj.risk.baseline_probability_level)
-                re_level = self._risk_matrix_level(
-                    proj.risk.residual_consequence_level,
-                    proj.risk.residual_probability_level)
+                # D-14: con varios componentes, el peor caso decide si el activo
+                # está en riesgo inaceptable (baseline), y la mitigación solo
+                # cuenta si baja TODOS los componentes por debajo del umbral
+                # (residual) — de lo contrario un componente sin intervenir
+                # seguiría siendo un riesgo inaceptable aunque otro sí se mitigue.
+                bl_level = max(
+                    self._risk_matrix_level(c.baseline_consequence_level,
+                                            c.baseline_probability_level)
+                    for c in proj.risk_components)
+                re_level = max(
+                    self._risk_matrix_level(c.residual_consequence_level,
+                                            c.residual_probability_level)
+                    for c in proj.risk_components)
                 if aid not in _asset_mit_map:
                     _asset_mit_map[aid] = {"baseline_level": bl_level, "mit_idxs": []}
                 # El proyecto mitiga el riesgo si: baseline ≥ umbral Y residual < umbral
@@ -7594,14 +7601,18 @@ class EnterpriseOptimizer:
                 for i, proj in enumerate(projects):
                     # Riesgo base anual del proyecto (si tiene perfil de riesgo)
                     risk_proxy = proj.costs.capex_COP * 0.05  # 5% CAPEX = riesgo proxy
-                    if proj.risk:
+                    if proj.risk_components:
+                        # D-14: suma el proxy EAL de CADA componente — misma
+                        # convención de agregación que delta_r_npv en evaluate().
                         rm = self.config.get("risk_matrix", {})
                         cof_by_bu = rm.get("consequence_levels_by_bu", {})
                         cl = cof_by_bu.get(proj.business_unit) or rm.get("consequence_levels", {})
                         pl = rm.get("probability_levels", {})
-                        c_val = cl.get(str(proj.risk.baseline_consequence_level), {}).get("value_COP", 0)
-                        p_val = pl.get(str(proj.risk.baseline_probability_level), {}).get("annual_prob", 0)
-                        risk_proxy = c_val * p_val
+                        risk_proxy = 0.0
+                        for c in proj.risk_components:
+                            c_val = cl.get(str(c.baseline_consequence_level), {}).get("value_COP", 0)
+                            p_val = pl.get(str(c.baseline_probability_level), {}).get("annual_prob", 0)
+                            risk_proxy += c_val * p_val
                     risk_expr.append(risk_proxy * x[i][t])
                 if risk_expr:
                     prob += (

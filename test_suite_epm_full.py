@@ -2927,6 +2927,26 @@ class S24_MILP_Avanzado(unittest.TestCase):
             "el criterio de 'es mitigante' está usando OR en vez de AND "
             "entre baseline>=tolerancia y residual<tolerancia")
 
+    def test_r8_con_dos_componentes_el_peor_caso_decide_el_baseline(self):
+        """Con 2 componentes de riesgo en el mismo proyecto, el peor de los
+        dos decide si el activo está en zona de riesgo inaceptable — y la
+        mitigación solo cuenta si el residual baja AMBOS componentes por
+        debajo del umbral (D-14)."""
+        comp_alto = RiskInput(baseline_consequence_level=5, baseline_probability_level=5,
+                              residual_consequence_level=1, residual_probability_level=1)
+        comp_bajo = RiskInput(baseline_consequence_level=2, baseline_probability_level=2,
+                              residual_consequence_level=1, residual_probability_level=1)
+        mitigante = self._proj("MULTI_MITIGANTE", 44_500_000_000, delta=1.0, aid="ACTIVO_MULTI")
+        mitigante.risk_components = [comp_alto, comp_bajo]
+        alternativa = self._proj("ALTERNATIVA2", 500_000_000, delta=2000.0)
+        periods = [ResourcePeriod(year=2026, budget_COP=44_900_000_000)]
+        result = self.opt.optimize([mitigante, alternativa], periods,
+                                   risk_tolerance_level=4)
+        sel = self._sel(result)
+        self.assertIn("MULTI_MITIGANTE", sel,
+                      "R8: con 2 componentes, el de nivel 5 (peor caso) debia forzar "
+                      "la mitigacion aunque el otro componente sea nivel 2")
+
     # ── R9: proyecto completado no puede volver a competir ──────────────────
 
     def test_r9_completado_no_se_reselecciona_asi_sea_gratis_y_atractivo(self):
