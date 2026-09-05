@@ -2947,6 +2947,28 @@ class S24_MILP_Avanzado(unittest.TestCase):
                       "R8: con 2 componentes, el de nivel 5 (peor caso) debia forzar "
                       "la mitigacion aunque el otro componente sea nivel 2")
 
+    def test_r8_con_dos_componentes_no_cuenta_si_el_peor_no_se_mitiga(self):
+        """El componente de peor severidad (nivel 5) nunca se mitigo (su
+        propio residual sigue en nivel 5) — aunque OTRO componente de baja
+        severidad si mejore, el proyecto NO debe forzarse: el riesgo
+        inaceptable real (el del componente grave) sigue sin bajar (D-14)."""
+        comp_grave_sin_mitigar = RiskInput(
+            baseline_consequence_level=5, baseline_probability_level=5,
+            residual_consequence_level=5, residual_probability_level=5)
+        comp_leve_mitigado = RiskInput(
+            baseline_consequence_level=2, baseline_probability_level=2,
+            residual_consequence_level=1, residual_probability_level=1)
+        no_mitigante = self._proj("MULTI_NO_MITIGA", 44_500_000_000, delta=1.0, aid="ACTIVO_MULTI_2")
+        no_mitigante.risk_components = [comp_grave_sin_mitigar, comp_leve_mitigado]
+        alternativa = self._proj("ALTERNATIVA3", 500_000_000, delta=2000.0)
+        periods = [ResourcePeriod(year=2026, budget_COP=44_900_000_000)]
+        result = self.opt.optimize([no_mitigante, alternativa], periods,
+                                   risk_tolerance_level=4)
+        sel = self._sel(result)
+        self.assertNotIn("MULTI_NO_MITIGA", sel,
+                         "R8: el componente grave nunca bajo de nivel 5 — no deberia "
+                         "contar como 'mitigante' solo porque otro componente leve mejoro")
+
     # ── R9: proyecto completado no puede volver a competir ──────────────────
 
     def test_r9_completado_no_se_reselecciona_asi_sea_gratis_y_atractivo(self):
