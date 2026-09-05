@@ -6079,11 +6079,17 @@ class SensitivityAnalyst:
                             for k in ("delta_annual", "annual_benefit_COP", "quantity"):
                                 if k in sc:
                                     sc[k] = sc[k] * benefit_mult
-            # Riesgo — se escala consecuencia del input de riesgo
-            if risk_mult != 1.0 and p.risk:
-                p.risk.consequence_level = min(
-                    5.0, p.risk.consequence_level * risk_mult
-                )
+            # Riesgo — se escala la consecuencia BASE de cada componente
+            # (D-14: bug pre-existente corregido — el campo 'consequence_level'
+            # no existe en RiskInput desde siempre; esta línea nunca se había
+            # ejercitado con éxito. El residual no se toca: refleja el efecto
+            # de la propia mitigación, no la severidad del mundo externo que
+            # este escenario de sensibilidad busca perturbar).
+            if risk_mult != 1.0:
+                for comp in (p.risk_components or []):
+                    comp.baseline_consequence_level = min(
+                        5, int(round(comp.baseline_consequence_level * risk_mult))
+                    )
             return p
 
         base_results, mod_results = [], []

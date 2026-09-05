@@ -1276,6 +1276,20 @@ class S10_Sensitivity(unittest.TestCase):
         self.assertIsNotNone(s1)
         self.assertIsNotNone(s2)
 
+    def test_risk_multiplier_escala_consecuencia_base_sin_reventar(self):
+        """D-14: 'risk_multiplier' escalaba un campo que no existe
+        (consequence_level) — reventaba con AttributeError en cuanto se
+        usaba con un proyecto que tuviera riesgo. Ahora escala
+        baseline_consequence_level de cada componente."""
+        r = _make_risk(cb=3, pb=3, cr=1, pr=1)
+        p = _make_project(pid="SENS1", risk=r)
+        analyst = SensitivityAnalyst(_cfg())
+        # No debe lanzar AttributeError (comportamiento previo a esta corrección).
+        result = analyst.run_scenario([p], adjustments={"risk_multiplier": 1.5})
+        self.assertIn("comparison", result)
+        self.assertEqual(len(result["comparison"]), 1)
+        self.assertEqual(result["comparison"][0]["id"], "SENS1")
+
     @unittest.skipUnless(PULP_OK, "PuLP no instalado")
     def test_frontier_generated(self):
         """compute_frontier=True genera efficient_frontier."""
