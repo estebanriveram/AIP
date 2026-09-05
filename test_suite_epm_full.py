@@ -90,7 +90,14 @@ def _make_project(
     mutual_exclusion_ids=None, exclusion_group_id=None,
     require_outage_alignment=False,
     capex_by_year=None, declared_execution_year=0,
+    analysis_horizon_years=10,
 ) -> ProjectInput:
+    """analysis_horizon_years=10 es un default seguro y arbitrario, NO un
+    intento de reproducir el horizonte que get_horizon_for_asset() habría
+    resuelto antes de D-14 (eso depende de qué config usa cada test — ver
+    nota en el plan de implementación). Los pocos tests cuyas aserciones sí
+    dependen del valor exacto de horizonte fijan analysis_horizon_years
+    explícitamente después de llamar a este factory."""
     if drivers is None:
         drivers = [_make_driver("VD-1", [_make_sc("VD-1-A", delta=100.0)])]
     p = ProjectInput(
@@ -102,7 +109,8 @@ def _make_project(
         execution_year=exec_year,
         optimal_year=exec_year,
         drivers=drivers,
-        risk=risk,
+        risk_components=[risk] if risk else [],
+        analysis_horizon_years=analysis_horizon_years,
         is_mandatory=is_mandatory,
         is_committed=is_committed,
         committed_year=committed_year,
@@ -2131,10 +2139,12 @@ class S21_TratamientoTemporal(unittest.TestCase):
         # AyA y Gas SÍ pasan a monótono creciente, confirmando que la
         # prueba sigue detectando el defecto real, no solo evitando las
         # dos aserciones que fallaban.
-        return _make_project(
+        p = _make_project(
             pid=f"DIF-{bu}", bu=bu, capex=5_000_000_000,
             drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=150.0)])],
             risk=_make_risk(3, 3, 1, 1), construction_years=1)
+        p.analysis_horizon_years = ValueEngine(_cfg()).get_horizon_for_asset(p)
+        return p
 
     # ── El invariante central ────────────────────────────────────────────────
 
@@ -2383,6 +2393,7 @@ class S22_RamaWeibull(unittest.TestCase):
                           drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=50.0)])],
                           risk=r, construction_years=cy)
         p.asset_type = "_default"
+        p.analysis_horizon_years = ValueEngine(self._cfg()).get_horizon_for_asset(p)
         return p
 
     # ── El calculo independiente: la formula reescrita en la prueba ──────────
@@ -2395,12 +2406,12 @@ class S22_RamaWeibull(unittest.TestCase):
         h = max(1, h_activo - d)                       # ventana comun
         cl = c["risk_matrix"]["consequence_levels_by_bu"][self.BU]
         pl = c["risk_matrix"]["probability_levels"]
-        cof_b = cl[str(p.risk.baseline_consequence_level)]["value_COP"]
-        cof_r = cl[str(p.risk.residual_consequence_level)]["value_COP"]
-        ratio = (pl[str(p.risk.residual_probability_level)]["annual_prob"] /
-                 pl[str(p.risk.baseline_probability_level)]["annual_prob"])
-        beta, eta = p.risk.weibull_beta, p.risk.weibull_eta
-        edad = p.risk.asset_age_years
+        cof_b = cl[str(p.risk_components[0].baseline_consequence_level)]["value_COP"]
+        cof_r = cl[str(p.risk_components[0].residual_consequence_level)]["value_COP"]
+        ratio = (pl[str(p.risk_components[0].residual_probability_level)]["annual_prob"] /
+                 pl[str(p.risk_components[0].baseline_probability_level)]["annual_prob"])
+        beta, eta = p.risk_components[0].weibull_beta, p.risk_components[0].weibull_eta
+        edad = p.risk_components[0].asset_age_years
 
         def tasa(t):
             if eta <= 0 or t <= 0 or beta <= 0:
@@ -2577,13 +2588,15 @@ class S23_MILP_Nucleo(unittest.TestCase):
         seleccion: el optimizador lo quiere, no hay que forzarlo."""
         sc = SubCriterionInput(id="VD-1-A", label="x", type="monetizable",
                                delta_annual=delta, price_per_unit=price)
-        return ProjectInput(
+        p = ProjectInput(
             id=pid, name=pid, business_unit=bu,
             investment_type="Reposicion de Activos", asset_type="_default",
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=0),
             drivers=[DriverInput(id="VD-1", reto="x", sub_criteria=[sc])],
-            risk=None, execution_year=year, optimal_year=year,
+            risk_components=[], execution_year=year, optimal_year=year,
             is_mandatory=mandatory, construction_years=cy)
+        p.analysis_horizon_years = ValueEngine(self.cfg).get_horizon_for_asset(p)
+        return p
 
     def _malo(self, pid, capex=500_000_000, delta=1.0, price=335_000,
              year=2026, bu="TyD", mandatory=False, cy=1):
@@ -2758,11 +2771,12 @@ class S24_MILP_Avanzado(unittest.TestCase):
             investment_type="Reposicion de Activos", asset_type="_default",
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=0),
             drivers=[DriverInput(id="VD-1", reto="x", sub_criteria=[sc])],
-            risk=risk, execution_year=year, optimal_year=year,
+            risk_components=[risk] if risk else [], execution_year=year, optimal_year=year,
             construction_years=1, is_committed=committed,
             committed_year=committed_year,
             require_outage_alignment=require_outage)
         p.asset_id = aid
+        p.analysis_horizon_years = ValueEngine(self.cfg).get_horizon_for_asset(p)
         return p
 
     def _sel(self, result):
@@ -3214,13 +3228,15 @@ class S26_CostoDelRetraso(unittest.TestCase):
         self.engine = ValueEngine(self.cfg)
 
     def _p(self, exec_year, optimal_year, drivers=None, construction_years=1):
-        return ProjectInput(
+        p = ProjectInput(
             id="P", name="P", business_unit="TyD",
             investment_type="Reposicion de Activos",
             costs=CostInput(capex_COP=0, opex_incremental_COP_year=0.0),
             execution_year=exec_year, optimal_year=optimal_year,
-            drivers=drivers or [], risk=None,
+            drivers=drivers or [], risk_components=[],
             construction_years=construction_years)
+        p.analysis_horizon_years = self.engine.get_horizon_for_asset(p)
+        return p
 
     def test_cod_usa_meses_no_anios_y_el_horizonte_del_activo(self):
         """CoD_mensual = beneficios_NPV / (horizonte_activo_años × 12)
@@ -3684,7 +3700,8 @@ class S29_ProporcionalidadMetricas(unittest.TestCase):
                          investment_type="Reposicion de Activos",
                          costs=CostInput(capex_COP=1_000_000_000, opex_incremental_COP_year=0.0),
                          execution_year=2026, optimal_year=2026,
-                         drivers=[driver], risk=None, construction_years=1)
+                         drivers=[driver], risk_components=[], construction_years=1)
+        p.analysis_horizon_years = 30
         r = self.engine.evaluate(p, deferral_years=3)
         capex_inflation = self.cfg.get("capex_inflation_rate", 0.04)
         wacc = self.engine._get_wacc("TyD")
@@ -3708,7 +3725,8 @@ class S29_ProporcionalidadMetricas(unittest.TestCase):
                          investment_type="Reposicion de Activos",
                          costs=CostInput(capex_COP=1_000_000_000, opex_incremental_COP_year=0.0),
                          execution_year=2026, optimal_year=2026,
-                         drivers=[driver], risk=None, construction_years=1)
+                         drivers=[driver], risk_components=[], construction_years=1)
+        p.analysis_horizon_years = 30
         r = self.engine.evaluate(p, deferral_years=3)
         # evaluate() activa el WACC propio de TyD durante todo el cálculo y
         # lo restaura al salir — hay que replicar esa conmutación para que
@@ -3810,13 +3828,15 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
     def _proj(self, capex=6_000_000_000, cy=1, weibull=True, opex=50_000_000.0):
         sc = SubCriterionInput(id="VD-1-A", label="ENS", type="monetizable",
                                delta_annual=1000.0, price_per_unit=335_000.0)
-        return ProjectInput(
+        p = ProjectInput(
             id="T", name="T", business_unit="TyD",
             investment_type="Reposicion de Activos",
             asset_type="transformador_potencia", construction_years=cy,
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex),
             drivers=[DriverInput(id="VD-1", reto="Calidad", sub_criteria=[sc])],
-            risk=self._riesgo(weibull))
+            risk_components=[self._riesgo(weibull)])
+        p.analysis_horizon_years = self.engine.get_horizon_for_asset(p)
+        return p
 
     def _por_anio(self, resultado):
         return {y["delay_years"]: y for y in resultado["yearly_results"]}
@@ -4576,6 +4596,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_X",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ALT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4583,6 +4604,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_X",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Confirmar la premisa del caso antes de probar la función: la larga
         # debe tener mayor VNT crudo Y menor EAV que la corta — si el config
         # cambia y esto deja de cumplirse, la prueba debe fallar aquí, no en
@@ -4725,6 +4747,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_OPT",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="OPT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4732,6 +4755,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_OPT",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         periods = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
 
@@ -4764,6 +4788,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_INF",
         )
         larga.asset_type = "transformador_potencia"
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="INF_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4771,6 +4796,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_INF", is_mandatory=True,
         )
         corta.asset_type = "sistema_control_SCADA"
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Presupuesto 0: INF_CORTA (la ganadora por EAV, ahora obligatoria)
         # no cabe en ningún lado — el solver debe reportar infactible.
         periods = [BudgetPeriod(year=2026, budget_COP=0.0)]
@@ -4795,6 +4821,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ENT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4802,6 +4829,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         periods = [ResourcePeriod(year=2026, budget_COP=100_000_000_000)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
 
@@ -4834,6 +4862,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT_INF",
         )
         larga.asset_type = "transformador_potencia"
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ENT_INF_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4841,6 +4870,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT_INF", is_mandatory=True,
         )
         corta.asset_type = "sistema_control_SCADA"
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Solo ENT_INF_CORTA es obligatoria (la ganadora por EAV) — si ambas
         # lo fueran, _preselect_by_eav lanzaría su propio ValueError de "dos
         # obligatorias" antes de llegar al solver, que no es el escenario
