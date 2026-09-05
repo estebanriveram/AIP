@@ -4107,6 +4107,61 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
                  f"(descuento aplicado una vez). Si se parece a {duplicado:.6f}, "
                  f"el rezago de obra se esta cobrando dos veces."))
 
+    # ── D-14: ΔR se suma por componente, y el growth rate reportado ─────────
+    # refleja el PRIMER componente, no un lookup aparte a nivel de proyecto ──
+
+    def test_dos_componentes_con_asset_type_distinto_se_suman_y_reportan_el_primero(self):
+        """El ΔR de 2 componentes con asset_type distinto es la suma
+        independiente de cada uno, y el risk_growth_rate reportado refleja
+        el PRIMER componente — no un lookup aparte a nivel de proyecto que
+        podria no coincidir con lo que el loop realmente uso (hallazgo de
+        code review de la migracion de _optimal_timing_inner, D-14).
+
+        El primer componente (comp_generico) NO declara asset_type propio, y
+        por eso cae a la tasa de la BU (0.15). El proyecto SI declara
+        asset_type="transformador_potencia" (0.12) — un lookup a nivel de
+        proyecto reportaria 0.12, distinto de lo que el primer componente
+        realmente usa. Solo con esta divergencia la prueba puede detectar
+        una regresion al bug original."""
+        comp_generico = RiskInput(
+            baseline_consequence_level=4, baseline_probability_level=4,
+            residual_consequence_level=2, residual_probability_level=2,
+            asset_type="",  # sin asset_type propio -> tasa de la BU (0.15)
+        )
+        comp_transformador = self._riesgo(weibull=False)  # asset_type="transformador_potencia" (0.12)
+
+        p = self._proj(weibull=False)
+        p.risk_components = [comp_generico, comp_transformador]
+        resultado_dos = self.engine.optimal_timing_analysis(p)
+        anios_dos = self._por_anio(resultado_dos)
+
+        p_solo_generico = self._proj(weibull=False)
+        p_solo_generico.risk_components = [comp_generico]
+        anios_generico = self._por_anio(self.engine.optimal_timing_analysis(p_solo_generico))
+
+        p_solo_transformador = self._proj(weibull=False)
+        p_solo_transformador.risk_components = [comp_transformador]
+        anios_transformador = self._por_anio(self.engine.optimal_timing_analysis(p_solo_transformador))
+
+        for t in (0, 1, 3):
+            if t not in anios_dos or t not in anios_generico or t not in anios_transformador:
+                continue
+            esperado = (anios_generico[t]["delta_r_npv_COP"]
+                        + anios_transformador[t]["delta_r_npv_COP"])
+            self.assertAlmostEqual(
+                anios_dos[t]["delta_r_npv_COP"], esperado,
+                delta=max(1.0, abs(esperado) * 1e-9),
+                msg=(f"t={t}: la suma de 2 componentes con asset_type distinto "
+                     f"no coincide con la suma independiente de cada uno por separado"))
+
+        # El growth rate reportado debe ser el del PRIMER componente
+        # (comp_generico, sin asset_type propio -> tasa de la BU = 0.15), NO
+        # el lookup a nivel de proyecto (project.asset_type=
+        # "transformador_potencia" -> 0.12) que el loop interno ya no usa
+        # para el computo real.
+        g_esperado = self.engine._get_risk_growth_rate("TyD", asset_type="")
+        self.assertAlmostEqual(resultado_dos["risk_growth_rate"], g_esperado, places=9)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S31 — PERFIL DE CAPEX POR AÑO (costs.capex_by_year)

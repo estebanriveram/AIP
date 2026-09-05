@@ -4667,10 +4667,6 @@ class ValueEngine:
             degraded_delta_r_annual = 0.0
             degraded_delta_r_npv    = 0.0
             for risk_inp in project.risk_components:
-                g_comp = self._get_risk_growth_rate(
-                    project.business_unit,
-                    asset_type=getattr(risk_inp, "asset_type", ""),
-                )
                 if risk_inp.weibull_beta > 0 and risk_inp.weibull_eta > 0:
                     # ── Rama Weibull: PoF(age + t) de la curva real ──────────
                     # Reutiliza la lógica de _calc_risk() con deferral=t para
@@ -4693,6 +4689,10 @@ class ValueEngine:
 
                 else:
                     # ── Rama exponencial ─────────────────────────────
+                    g_comp = self._get_risk_growth_rate(
+                        project.business_unit,
+                        asset_type=getattr(risk_inp, "asset_type", ""),
+                    )
                     original_risk_annual = self._calc_risk(
                         risk_inp,
                         business_unit=project.business_unit,
@@ -4780,6 +4780,17 @@ class ValueEngine:
                      if (_first_risk and _first_risk.weibull_beta > 0
                          and _first_risk.weibull_eta > 0)
                      else "exponential")
+        # D-14: el risk_growth_rate reportado debe reflejar lo que realmente
+        # usó el PRIMER componente dentro del loop (via g_comp), no un lookup
+        # aparte a nivel de proyecto — mismo criterio que _evaluate_inner usa
+        # para sus campos de "forma" (cof_source, pof_mode, etc.): no existe
+        # un agregado con sentido único cuando cada componente puede tener su
+        # propia tasa de crecimiento de riesgo.
+        _first_growth_rate = (
+            self._get_risk_growth_rate(project.business_unit,
+                                       asset_type=getattr(_first_risk, "asset_type", ""))
+            if _first_risk else risk_growth_rate
+        )
 
         return {
             "base_year":            base_year,
@@ -4790,7 +4801,7 @@ class ValueEngine:
             "delta_vs_t0":          optimal["net_value_COP"] - t0_result["net_value_COP"],
             "urgency":              urgency,
             "pof_mode":             _pof_mode,               # "weibull" | "exponential" — del PRIMER componente
-            "risk_growth_rate":     risk_growth_rate if _pof_mode == "exponential" else None,
+            "risk_growth_rate":     _first_growth_rate if _pof_mode == "exponential" else None,
             "weibull_beta":         _first_risk.weibull_beta if _first_risk else None,
             "weibull_eta":          _first_risk.weibull_eta  if _first_risk else None,
             "asset_age_years":      _first_risk.asset_age_years if _first_risk else None,
