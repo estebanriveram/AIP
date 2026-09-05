@@ -4879,6 +4879,21 @@ class S33_RiskInputCamposComponente(unittest.TestCase):
         self.assertEqual(r.source_asset_id, "AyA-TUB-001")
 
 
+class S34_AssetProfileStatusField(unittest.TestCase):
+    """AssetProfile gana status (activo/retirado) para soft-delete (D-14)."""
+
+    def test_asset_profile_status_default_activo(self):
+        a = AssetProfile(asset_id="A1", asset_name="Transformador 1",
+                         asset_class="transformador", business_unit="TyD")
+        self.assertEqual(a.status, "activo")
+
+    def test_asset_profile_status_se_puede_declarar_retirado(self):
+        a = AssetProfile(asset_id="A2", asset_name="Transformador 2",
+                         asset_class="transformador", business_unit="TyD",
+                         status="retirado")
+        self.assertEqual(a.status, "retirado")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────

@@ -8976,6 +8976,15 @@ class AssetProfile:
     step_pof_values: List[float] = field(default_factory=lambda: [0.05, 0.25, 0.70])
     acceleration_factor: float = 2.0       # Para modelo acelerado
 
+    # ── D-14: soft-delete para el Registro de Activos ───────────────────────
+    status: str = "activo"   # "activo" | "retirado"
+    """Nunca se borra un AssetProfile, se retira (ver AssetRegistryStore.retire,
+    Task 14 de un plan de implementación futuro, todavía no ejecutado).
+    list() excluye retirados por defecto. Un activo reemplazado físicamente
+    no debe desaparecer del Registro: si un proyecto pasado lo referenció
+    (RiskInput.source_asset_id), debe poder auditarse contra qué datos se
+    evaluó."""
+
 
 @dataclass
 class DegradationResult:
