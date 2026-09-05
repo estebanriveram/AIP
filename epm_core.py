@@ -3574,7 +3574,7 @@ class ValueEngine:
         _orig_wacc_marg = self.wacc
         self.wacc = self._get_wacc(alternative.business_unit)
         try:
-            horizon  = self.get_horizon_for_asset(alternative)
+            horizon  = alternative.analysis_horizon_years
             eav_marg = self.calc_eav(vnt_marg, horizon)
             capex    = alternative.costs.capex_COP
             # VEI_EAV: EAV / (CAPEX / horizon) — normaliza eficiencia entre horizontes
