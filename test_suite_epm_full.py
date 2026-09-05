@@ -381,6 +381,15 @@ class S1_ValueEngine(unittest.TestCase):
         for vid in ["VD-1", "VD-2", "VD-4"]:
             self.assertIn(vid, dr_ids, f"Driver {vid} ausente en resultado")
 
+    def test_risk_components_vacia_es_valida_y_no_aporta_riesgo(self):
+        """spec §8: risk_components vacía es válida — equivalente al risk=None
+        de antes de D-14, sin ΔR y sin reventar."""
+        p = _make_project(pid="SINRIESGO", risk=None)
+        r = self.engine.evaluate(p)
+        self.assertEqual(r["risk_analysis"]["delta_r_npv_COP"], 0.0)
+        self.assertEqual(r["risk_analysis"]["components"], [])
+        self.assertEqual(r["delta_r_npv_COP"], 0.0)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S2 — MILP R1-R12

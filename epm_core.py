@@ -4163,7 +4163,13 @@ class ValueEngine:
         # 1. Beneficios ajustados por temporalidad (construction_years + benefit_start_offsets)
         #    Cada driver puede tener un lag diferente según configura el analista.
         #    Ref: Copperleaf C55 §5.3 — Execution Duration & Benefit Timing.
-        h_asset = self.get_horizon_for_asset(project)
+        h_asset = project.analysis_horizon_years
+        if h_asset <= 0:
+            raise ValueError(
+                f"Proyecto '{project.id}': analysis_horizon_years no fue declarado "
+                f"(o es 0). No hay horizonte por defecto — el analista debe "
+                f"declararlo explícitamente antes de evaluar (spec §8)."
+            )
 
         # Ventana de evaluación COMÚN. Sin esto, diferir d años seguía dando
         # los mismos h años de beneficios, solo que empezando más tarde: cada
@@ -4189,7 +4195,9 @@ class ValueEngine:
 
         # 2. Riesgo mitigado
         # Si hay delta_r_override_COP (portafolios no-Sostenimiento), se usa directamente.
-        # De lo contrario, se calcula desde RiskInput (matriz 5×5) como antes.
+        # De lo contrario, se agrega desde risk_components (D-14): cada componente
+        # se calcula de forma independiente (matriz genérica / curva física / costo
+        # directo) con _calc_risk(), sin cambios internos a esa función, y se suma.
         risk_result = {}
         delta_r_npv = 0.0
         _dr_override = getattr(project, "delta_r_override_COP", 0.0)
@@ -4202,21 +4210,62 @@ class ValueEngine:
                 "delta_r_npv_COP": delta_r_npv,
                 "source": "override_portafolio",
             }
-        elif project.risk:
-            h_asset = self.get_horizon_for_asset(project)
-            g_asset = self._get_risk_growth_rate(
-                project.business_unit,
-                asset_type=getattr(project, "asset_type", ""),
-            )
-            risk_result = self._calc_risk(
-                project.risk,
-                construction_years=eff_cy,
-                horizon=h_eval,
-                business_unit=project.business_unit,
-                risk_growth_rate=g_asset,
-                deferral_years=deferral_years,
-            )
-            delta_r_npv = risk_result["delta_r_npv_COP"]
+        else:
+            risk_components_results = []
+            delta_r_annual_total = 0.0
+            delta_r_npv_total = 0.0
+            exposure_total = 0.0
+            warnings_total: list = []
+            for component in project.risk_components:
+                g_comp = self._get_risk_growth_rate(
+                    project.business_unit,
+                    asset_type=getattr(component, "asset_type", ""),
+                )
+                r = self._calc_risk(
+                    component,
+                    construction_years=eff_cy,
+                    horizon=h_eval,
+                    business_unit=project.business_unit,
+                    risk_growth_rate=g_comp,
+                    deferral_years=deferral_years,
+                )
+                r["label"] = component.label
+                r["source_asset_id"] = component.source_asset_id
+                risk_components_results.append(r)
+                delta_r_annual_total += r["delta_r_annual_COP"]
+                delta_r_npv_total    += r["delta_r_npv_COP"]
+                exposure_total       += r.get("deferral_exposure_COP", 0.0)
+                warnings_total.extend(r.get("warnings", []))
+
+            delta_r_npv = delta_r_npv_total
+            _first = risk_components_results[0] if risk_components_results else {}
+            risk_result = {
+                # Compatibilidad: mismas claves que antes de D-14, ahora agregadas.
+                # Con 0-1 componentes son idénticas al comportamiento previo; con
+                # 2+, la suma es la agregación real. Las claves de forma/origen
+                # (cof_source, pof_mode, etc.) reportan el PRIMER componente — no
+                # existe un "agregado" con sentido único para ellas cuando cada
+                # componente puede tomar una rama distinta (matriz/Weibull/directo).
+                "baseline_annual_COP":   sum(r.get("baseline_annual_COP", 0.0) for r in risk_components_results),
+                "residual_annual_COP":   sum(r.get("residual_annual_COP", 0.0) for r in risk_components_results),
+                "delta_r_annual_COP":    delta_r_annual_total,
+                "delta_r_npv_COP":       delta_r_npv_total,
+                "deferral_exposure_COP": exposure_total,
+                "horizon_used":          h_eval,
+                "cof_source":            _first.get("cof_source"),
+                "cof_mode":              _first.get("cof_mode"),
+                "pof_mode":              _first.get("pof_mode"),
+                "risk_growth_rate_used": _first.get("risk_growth_rate_used"),
+                "weibull_beta":          _first.get("weibull_beta"),
+                "weibull_eta":           _first.get("weibull_eta"),
+                "asset_age_years":       _first.get("asset_age_years"),
+                "pof_baseline_at_eval":  _first.get("pof_baseline_at_eval"),
+                "tasa_falla_anual_base": _first.get("tasa_falla_anual_base"),
+                "pof_residual_at_eval":  _first.get("pof_residual_at_eval"),
+                "deferral_years":        deferral_years,
+                "warnings":              warnings_total,
+                "components":            risk_components_results,
+            }
 
         # 3. Cost of Delay — Copperleaf C55 §6.2
         #    Solo depende de los beneficios de los drivers y el retraso.
@@ -4314,7 +4363,7 @@ class ValueEngine:
 
         # Horizonte dinámico por tipo de activo
         # Permite EAV justo para comparar activos de larga vida vs. tecnología
-        horizon_asset = self.get_horizon_for_asset(project)
+        horizon_asset = h_asset
         eav_cop = self.calc_eav(net_value, horizon_asset)
         # VEI_EAV = EAV / (CAPEX/H) — eficiencia anualizada, comparable entre tipos
         vei_eav = eav_cop / (capex_pv / horizon_asset) if capex_pv > 0 and horizon_asset > 0 else 0.0
@@ -4369,7 +4418,7 @@ class ValueEngine:
             "capex_pv_COP": capex_pv,           # el que entra a la ecuación
             "capex_schedule_pv_COP": capex_pv_por_tramo,  # cada tramo, para auditoría
             "opex_incremental_npv_COP": opex_npv,
-            "analysis_horizon_years": self.horizon,
+            "analysis_horizon_years": project.analysis_horizon_years,
             "horizon_asset_years": horizon_asset,
             "wacc": self.wacc,
             "factor_npv": self._factor_npv,
