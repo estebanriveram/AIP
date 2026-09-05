@@ -5231,6 +5231,32 @@ class S35_AssetRegistryStore(unittest.TestCase):
         self.assertEqual(errores[0]["asset_id"], "AyA-TUB-030")
         self.assertIsNotNone(self.store.get("AyA-TUB-031"))
 
+    def test_import_bytes_csv_sigue_funcionando(self):
+        """import_bytes con un .csv debe comportarse igual que import_csv."""
+        csv_bytes = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-040,Tuberia CSV,tuberia_ac,AyA,2011\n"
+        ).encode("utf-8")
+        importados, errores = self.store.import_bytes(csv_bytes, "activos.csv")
+        self.assertEqual(len(importados), 1)
+        self.assertEqual(len(errores), 0)
+        self.assertIsNotNone(self.store.get("AyA-TUB-040"))
+
+    def test_import_bytes_xlsx_importa_filas_validas(self):
+        """import_bytes con un .xlsx debe leer las mismas columnas que el CSV."""
+        import openpyxl
+        import io
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["asset_id", "asset_name", "asset_class", "business_unit", "install_year"])
+        ws.append(["AyA-TUB-050", "Tuberia Excel", "tuberia_ac", "AyA", 2013])
+        buf = io.BytesIO()
+        wb.save(buf)
+        importados, errores = self.store.import_bytes(buf.getvalue(), "activos.xlsx")
+        self.assertEqual(len(importados), 1)
+        self.assertEqual(len(errores), 0)
+        self.assertIsNotNone(self.store.get("AyA-TUB-050"))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME

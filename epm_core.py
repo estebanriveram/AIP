@@ -10386,7 +10386,8 @@ class AssetRegistryStore:
         asset.status = "retirado"
         self.update(asset)
 
-    def import_csv(self, file_obj) -> Tuple[List[AssetProfile], List[dict]]:
+    def _import_rows(self, fieldnames: List[str], rows: List[dict]
+                     ) -> Tuple[List[AssetProfile], List[dict]]:
         """(importados, errores_por_fila). Cada fila con asset_id ya
         existente (en el Registro o repetido dentro del mismo archivo) es un
         error reportado, no una sobrescritura — misma regla que create().
@@ -10394,19 +10395,26 @@ class AssetRegistryStore:
         Reutiliza el mismo normalizador de encabezados (_norm) que usa
         PortfolioLoader, con su propia tabla de sinónimos — no reutiliza
         _map_columns porque esa está fija a la tabla de alias de proyectos,
-        no de activos (mismo patrón que ActualsLoader._map_cols)."""
-        import csv as _csv
-        reader = _csv.DictReader(file_obj)
-        col_map = _map_asset_columns(reader.fieldnames or [])
+        no de activos (mismo patrón que ActualsLoader._map_cols).
+
+        Lógica compartida por import_csv() e import_excel(): recibe `rows`
+        ya materializada (no un lector perezoso) para que ambos orígenes
+        produzcan exactamente el mismo comportamiento fila a fila."""
+        col_map = _map_asset_columns(fieldnames or [])
 
         importados: List[AssetProfile] = []
         errores: List[dict] = []
         seen_in_file: set = set()
 
-        for i, row in enumerate(reader, start=2):  # fila 1 = encabezado
+        for i, row in enumerate(rows, start=2):  # fila 1 = encabezado
             def g(field):
                 col = col_map.get(field)
-                return row.get(col, "").strip() if col else ""
+                if not col:
+                    return ""
+                val = row.get(col, "")
+                # Excel entrega tipos nativos (int/float/datetime/None);
+                # CSV entrega str. Normalizamos ambos al mismo shape de texto.
+                return "" if val is None else str(val).strip()
 
             asset_id = g("asset_id")
             if not asset_id:
@@ -10432,6 +10440,68 @@ class AssetRegistryStore:
             importados.append(asset)
 
         return importados, errores
+
+    def import_csv(self, file_obj) -> Tuple[List[AssetProfile], List[dict]]:
+        """(importados, errores_por_fila) desde un archivo CSV. Ver
+        _import_rows() para la lógica de fila compartida con import_excel()."""
+        import csv as _csv
+        reader = _csv.DictReader(file_obj)
+        fieldnames = reader.fieldnames  # se puebla al acceder, antes de list()
+        rows = list(reader)
+        return self._import_rows(fieldnames or [], rows)
+
+    def import_excel(self, data: bytes) -> Tuple[List[AssetProfile], List[dict]]:
+        """(importados, errores_por_fila) desde bytes de un archivo .xlsx.
+
+        Misma técnica de lectura que PortfolioLoader._from_excel_bytes
+        (openpyxl con data_only=True + detección de la fila de encabezados
+        real, para tolerar título/subtítulo antes del header), pero usando
+        la tabla de alias de columnas de activos (_map_asset_columns) en
+        vez de la de proyectos. No se construye un parser nuevo — se
+        reutiliza el mismo patrón, solo cambia el mapeador de columnas."""
+        if not OPENPYXL_OK:
+            raise ImportError("openpyxl no instalado. pip install openpyxl")
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        ws = wb.active
+        rows_raw = list(ws.iter_rows(values_only=True))
+        if not rows_raw:
+            return [], []
+
+        header_row_idx = 0
+        for i, row in enumerate(rows_raw[:20]):  # buscar en las primeras 20 filas
+            non_empty = [str(c).strip() for c in row
+                         if c is not None and str(c).strip() not in ("", "None")]
+            if len(non_empty) < 2:
+                continue
+            trial_map = _map_asset_columns(non_empty)
+            if len(trial_map) >= 2:
+                header_row_idx = i
+                break
+        else:
+            for i, row in enumerate(rows_raw):
+                if any(c is not None for c in row):
+                    header_row_idx = i
+                    break
+
+        headers = [str(c).strip() if c is not None else ""
+                   for c in rows_raw[header_row_idx]]
+        data_rows = []
+        for row in rows_raw[header_row_idx + 1:]:
+            if any(c is not None and str(c).strip() not in ("", "None") for c in row):
+                data_rows.append({headers[i]: row[i]
+                                   for i in range(min(len(headers), len(row)))})
+        return self._import_rows(headers, data_rows)
+
+    def import_bytes(self, data: bytes, filename: str) -> Tuple[List[AssetProfile], List[dict]]:
+        """Despacha a import_excel()/import_csv() según la extensión del
+        archivo — mismo patrón que PortfolioLoader.from_bytes(). Pensado
+        para st.file_uploader, que entrega bytes + nombre de archivo (no un
+        objeto tipo archivo de texto como espera import_csv)."""
+        ext = Path(filename).suffix.lower()
+        if ext in (".xlsx", ".xls"):
+            return self.import_excel(data)
+        else:
+            return self.import_csv(io.StringIO(data.decode("utf-8-sig", errors="replace")))
 
 
 _COL_ALIASES_ASSET = {
