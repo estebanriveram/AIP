@@ -390,6 +390,56 @@ class S1_ValueEngine(unittest.TestCase):
         self.assertEqual(r["risk_analysis"]["components"], [])
         self.assertEqual(r["delta_r_npv_COP"], 0.0)
 
+    def test_risk_components_multiples_se_suman_correctamente(self):
+        """El ΔR de 2 componentes es la suma independiente de cada uno —
+        no el de uno solo, ni un promedio. Corrige una brecha real hallada
+        en revisión de código: la aritmética de suma nunca tenía cobertura
+        propia, solo el caso de 0 componentes."""
+        comp_matriz = _make_risk(cb=4, pb=4, cr=1, pr=1)
+        comp_directo = RiskInput(
+            baseline_consequence_level=1, baseline_probability_level=1,
+            baseline_annual_COP=500_000_000.0,
+        )
+        p = _make_project(pid="MULTI", risk=None)
+        p.risk_components = [comp_matriz, comp_directo]
+
+        r = self.engine.evaluate(p)
+        ra = r["risk_analysis"]
+
+        # Recalculo independiente: cada componente por separado, con el mismo
+        # horizonte/business_unit/construction_years/deferral que usó evaluate().
+        eff_cy = p.construction_years
+        h_eval = p.analysis_horizon_years
+        # evaluate() activa el WACC propio de la BU (TyD=9,5%, no el 10%
+        # global) durante todo el cálculo interno y lo restaura al salir —
+        # hay que replicar esa conmutación para que el recálculo de
+        # referencia use la misma tasa que usó internamente evaluate().
+        _orig_wacc = self.engine.wacc
+        self.engine.wacc = self.engine._get_wacc(p.business_unit)
+        try:
+            g_matriz = self.engine._get_risk_growth_rate(p.business_unit, asset_type="")
+            g_directo = self.engine._get_risk_growth_rate(p.business_unit, asset_type="")
+            r_matriz = self.engine._calc_risk(
+                comp_matriz, construction_years=eff_cy, horizon=h_eval,
+                business_unit=p.business_unit, risk_growth_rate=g_matriz, deferral_years=0)
+            r_directo = self.engine._calc_risk(
+                comp_directo, construction_years=eff_cy, horizon=h_eval,
+                business_unit=p.business_unit, risk_growth_rate=g_directo, deferral_years=0)
+        finally:
+            self.engine.wacc = _orig_wacc
+        esperado_npv = r_matriz["delta_r_npv_COP"] + r_directo["delta_r_npv_COP"]
+
+        self.assertAlmostEqual(ra["delta_r_npv_COP"], esperado_npv, delta=1.0,
+            msg="ΔR de 2 componentes no coincide con la suma independiente")
+        self.assertAlmostEqual(r["delta_r_npv_COP"], esperado_npv, delta=1.0)
+        self.assertEqual(len(ra["components"]), 2)
+        # El primer componente (matriz) es el que reporta cof_source/pof_mode
+        # a nivel agregado — no un "agregado" de ambos, documentado a propósito.
+        self.assertEqual(ra["cof_source"], r_matriz["cof_source"])
+        self.assertNotEqual(ra["cof_source"], r_directo["cof_source"],
+            msg="fixture: los dos componentes deben tener cof_source distinto "
+                "para que esta prueba demuestre algo")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S2 — MILP R1-R12
