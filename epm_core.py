@@ -4618,7 +4618,12 @@ class ValueEngine:
         capex_base = project.costs.capex_COP
 
         # Issue 8: horizonte del activo para NPV del ΔR en cada año t
-        h_asset_timing = self.get_horizon_for_asset(project)
+        h_asset_timing = project.analysis_horizon_years
+        if h_asset_timing <= 0:
+            raise ValueError(
+                f"Proyecto '{project.id}': analysis_horizon_years no fue declarado "
+                f"(o es 0) — optimal_timing_analysis() no puede escanear sin él."
+            )
 
         # Issue 2b: lag fijo de construcción — se aplica igual que en evaluate().
         # En timing, tf cubre el delay de la decisión; fd_constr cubre el tiempo
@@ -4657,10 +4662,15 @@ class ValueEngine:
             modified_project.costs = copy.deepcopy(project.costs)
             modified_project.costs.capex_COP = capex_t
 
-            # Escalar el riesgo por degradación — Weibull o exponencial
-            if modified_project.risk:
-                risk_inp = project.risk
-
+            # Escalar el riesgo por degradación — Weibull o exponencial —
+            # sumado sobre TODOS los componentes de risk_components (D-14).
+            degraded_delta_r_annual = 0.0
+            degraded_delta_r_npv    = 0.0
+            for risk_inp in project.risk_components:
+                g_comp = self._get_risk_growth_rate(
+                    project.business_unit,
+                    asset_type=getattr(risk_inp, "asset_type", ""),
+                )
                 if risk_inp.weibull_beta > 0 and risk_inp.weibull_eta > 0:
                     # ── Rama Weibull: PoF(age + t) de la curva real ──────────
                     # Reutiliza la lógica de _calc_risk() con deferral=t para
@@ -4673,13 +4683,13 @@ class ValueEngine:
                         risk_growth_rate=0.0,        # ignorado en modo Weibull
                         deferral_years=t,
                     )
-                    degraded_delta_r_annual = _risk_t["delta_r_annual_COP"]
+                    comp_delta_r_annual = _risk_t["delta_r_annual_COP"]
                     # _calc_risk() YA aplicó internamente el descuento por años
                     # de obra (su fd_lag). Aquí solo falta el del retraso de la
                     # decisión. Aplicar además fd_constr más abajo lo cobraba
                     # DOS VECES, y el defecto vivía solo en esta rama: la
                     # exponencial arma su NPV desde cero y sí lo necesita.
-                    degraded_delta_r_npv    = _risk_t["delta_r_npv_COP"] * tf
+                    comp_delta_r_npv    = _risk_t["delta_r_npv_COP"] * tf
 
                 else:
                     # ── Rama exponencial ─────────────────────────────
@@ -4687,9 +4697,9 @@ class ValueEngine:
                         risk_inp,
                         business_unit=project.business_unit,
                     )["delta_r_annual_COP"]
-                    degraded_delta_r_annual = original_risk_annual * ((1 + risk_growth_rate) ** t)
+                    comp_delta_r_annual = original_risk_annual * ((1 + g_comp) ** t)
                     # Anualidad Gordon — consistente con _calc_risk() (C55 §4.3 + ).
-                    _g  = risk_growth_rate
+                    _g  = g_comp
                     _r  = self.wacc
                     _h  = h_asset_timing
                     if abs(_r - _g) < 1e-9:
@@ -4701,11 +4711,11 @@ class ValueEngine:
                     # Esta rama construye el valor presente desde cero, así que
                     # aquí SÍ hay que aplicar los dos descuentos: el del retraso
                     # de la decisión y el de los años de obra.
-                    degraded_delta_r_npv = (degraded_delta_r_annual * gordon_timing
-                                            * tf * fd_constr)
-            else:
-                degraded_delta_r_annual = 0.0
-                degraded_delta_r_npv    = 0.0
+                    comp_delta_r_npv = (comp_delta_r_annual * gordon_timing
+                                        * tf * fd_constr)
+
+                degraded_delta_r_annual += comp_delta_r_annual
+                degraded_delta_r_npv    += comp_delta_r_npv
 
             # ── Beneficios de los drivers (constantes — la inversión no cambia) ──
             driver_results = [
@@ -4765,9 +4775,10 @@ class ValueEngine:
         # Si el año óptimo es t=0, el proyecto no puede esperar
         urgency = "AHORA"   if optimal["delay_years"] == 0 else                   "PRONTO"  if optimal["delay_years"] <= 1 else                   "FLEXIBLE"
 
+        _first_risk = project.risk_components[0] if project.risk_components else None
         _pof_mode = ("weibull"
-                     if (project.risk and project.risk.weibull_beta > 0
-                         and project.risk.weibull_eta > 0)
+                     if (_first_risk and _first_risk.weibull_beta > 0
+                         and _first_risk.weibull_eta > 0)
                      else "exponential")
 
         return {
@@ -4778,11 +4789,11 @@ class ValueEngine:
             "t0_net_value":         t0_result["net_value_COP"],
             "delta_vs_t0":          optimal["net_value_COP"] - t0_result["net_value_COP"],
             "urgency":              urgency,
-            "pof_mode":             _pof_mode,               # "weibull" | "exponential"
+            "pof_mode":             _pof_mode,               # "weibull" | "exponential" — del PRIMER componente
             "risk_growth_rate":     risk_growth_rate if _pof_mode == "exponential" else None,
-            "weibull_beta":         project.risk.weibull_beta if project.risk else None,
-            "weibull_eta":          project.risk.weibull_eta  if project.risk else None,
-            "asset_age_years":      project.risk.asset_age_years if project.risk else None,
+            "weibull_beta":         _first_risk.weibull_beta if _first_risk else None,
+            "weibull_eta":          _first_risk.weibull_eta  if _first_risk else None,
+            "asset_age_years":      _first_risk.asset_age_years if _first_risk else None,
             "capex_inflation_rate": capex_inflation_rate,
             "yearly_results":       yearly_results,
         }
