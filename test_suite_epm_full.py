@@ -3882,7 +3882,7 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
                   residual_consequence_level=2, residual_probability_level=2)
         if weibull:
             kw.update(weibull_beta=2.5, weibull_eta=40.0, asset_age_years=edad)
-        return RiskInput(**kw)
+        return RiskInput(**kw, asset_type="transformador_potencia")
 
     def _proj(self, capex=6_000_000_000, cy=1, weibull=True, opex=50_000_000.0):
         sc = SubCriterionInput(id="VD-1-A", label="ENS", type="monetizable",
