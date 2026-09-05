@@ -4125,7 +4125,7 @@ class ValueEngine:
         # Issue 9: horizonte por tipo de activo — un transformador (30a) tiene CoD
         # mensual 3× menor que si se divide por el horizonte global de 10a.
         # Usar el horizonte incorrecto sobreestima la urgencia para activos de larga vida.
-        h_asset = self.get_horizon_for_asset(project)
+        h_asset = project.analysis_horizon_years
         horizon_months = h_asset * 12
         # CoD sobre beneficios de drivers únicamente — ΔR separado
         cod_monthly = benefits_npv / horizon_months if horizon_months > 0 else 0.0
