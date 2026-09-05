@@ -12,3 +12,8 @@
 !REGISTRO_ASUNTOS_ABIERTOS.md
 !.gitignore
 !docs/**
+
+# Worktrees de trabajo (superpowers:using-git-worktrees) — nunca versionados,
+# incluso si algún archivo dentro coincide por nombre con un patrón
+# permitido arriba (ej. epm_core.py dentro de .worktrees/algo/).
+/.worktrees/
