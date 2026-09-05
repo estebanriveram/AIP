@@ -1236,6 +1236,25 @@ class S9_PortfolioLoader(unittest.TestCase):
         projects, _ = self.loader.from_bytes(data, "test.csv")
         self.assertGreaterEqual(len(projects), 40)
 
+    def test_proyecto_importado_trae_analysis_horizon_years_resuelto(self):
+        """D-14: el importador ya no puede depender de que evaluate() resuelva
+        el horizonte por asset_type — debe quedar resuelto en el objeto."""
+        loader = PortfolioLoader(config=DEFAULT_CONFIG)
+        # Encabezados verificados contra _COL_ALIASES (epm_core.py, sección
+        # cerca de la clase PortfolioLoader): "id", "name", "business_unit",
+        # "investment_type", "capex_total" y "execution_year" son, cada uno,
+        # la propia clave interna (primer alias de su lista), así que valen
+        # literalmente como encabezado.
+        csv_bytes = (
+            "id,name,business_unit,investment_type,capex_total,execution_year\n"
+            "P001,Proyecto Test,TyD,Reposicion de Activos,1000000000,2026\n"
+        ).encode("utf-8")
+        projects, report = loader.from_bytes(csv_bytes, "test.csv")
+        self.assertEqual(len(projects), 1)
+        self.assertGreater(projects[0].analysis_horizon_years, 0,
+                           "El proyecto importado debe traer un horizonte > 0, "
+                           "o evaluate() fallará con el guardián del Task 5")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — SENSITIVITY ANALYST

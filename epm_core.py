@@ -10800,12 +10800,19 @@ class PortfolioLoader:
                 business_unit=bu, investment_type=inv_type,
                 costs=costs,
                 execution_year=exec_yr, optimal_year=opt_yr,
-                drivers=drivers, risk=risk,
+                drivers=drivers, risk_components=[risk] if risk else [],
                 is_mandatory=is_mand,
                 is_committed=is_committed_flag,
                 committed_year=committed_yr,
                 construction_years=cy,
             )
+            # D-14: resuelto UNA vez al importar, con el mismo método que antes
+            # se llamaba en cada evaluate() — preserva exactamente el horizonte
+            # que este proyecto habría tenido antes de esta migración (este
+            # importador nunca declara asset_type, así que hoy cae en el
+            # _default de la BU o en el fallback global; get_horizon_for_asset
+            # no se elimina — sigue existiendo para la Vista de Flota).
+            proj.analysis_horizon_years = self._engine.get_horizon_for_asset(proj)
             proj.precedent_project_id = prec_id
             proj.min_lag_years = min_lag
             proj.mutual_exclusion_ids = mutex_list
