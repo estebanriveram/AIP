@@ -10274,6 +10274,186 @@ class SnapshotStore:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# BLOQUE 10b — ASSET REGISTRY STORE (Registro de Activos, D-14)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AssetRegistryStore:
+    """
+    Registro de Activos — núcleo mínimo (D-14).
+
+    Mismo patrón de persistencia que SnapshotStore: un archivo JSON por
+    registro + un _index.json liviano para listar/buscar sin abrir cada
+    archivo. A diferencia de SnapshotStore (append-only, ids generados con
+    uuid4), aquí el asset_id lo declara el analista — create()/update() son
+    simétricos y ninguno sobrescribe en silencio.
+    """
+
+    def __init__(self, storage_dir: str = "./activos_registrados"):
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self._index_path = self.storage_dir / "_index.json"
+        self._index = self._load_index()
+
+    def _load_index(self) -> dict:
+        if self._index_path.exists():
+            with open(self._index_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {"assets": [], "created": datetime.now(timezone.utc).isoformat()}
+
+    def _save_index(self) -> None:
+        with open(self._index_path, 'w', encoding='utf-8') as f:
+            json.dump(self._index, f, ensure_ascii=False, indent=2)
+
+    def _asset_path(self, asset_id: str) -> Path:
+        return self.storage_dir / f"{asset_id}.json"
+
+    def _write(self, asset: AssetProfile) -> None:
+        import dataclasses
+        with open(self._asset_path(asset.asset_id), 'w', encoding='utf-8') as f:
+            json.dump(dataclasses.asdict(asset), f, ensure_ascii=False, indent=2)
+
+    def _update_index_entry(self, asset: AssetProfile) -> None:
+        entries = [e for e in self._index["assets"] if e["asset_id"] != asset.asset_id]
+        entries.append({
+            "asset_id": asset.asset_id,
+            "asset_name": asset.asset_name,
+            "business_unit": asset.business_unit,
+            "asset_class": asset.asset_class,
+            "status": asset.status,
+        })
+        self._index["assets"] = entries
+        self._save_index()
+
+    def create(self, asset: AssetProfile) -> None:
+        """Falla si asset_id ya existe — sin sobrescritura silenciosa."""
+        if self._asset_path(asset.asset_id).exists():
+            raise ValueError(
+                f"El activo '{asset.asset_id}' ya existe en el Registro — "
+                f"usa update() para modificarlo."
+            )
+        self._write(asset)
+        self._update_index_entry(asset)
+
+    def update(self, asset: AssetProfile) -> None:
+        """Falla si asset_id NO existe — simetría con create()."""
+        if not self._asset_path(asset.asset_id).exists():
+            raise ValueError(
+                f"El activo '{asset.asset_id}' no existe en el Registro — "
+                f"usa create() para darlo de alta."
+            )
+        self._write(asset)
+        self._update_index_entry(asset)
+
+    def get(self, asset_id: str) -> Optional[AssetProfile]:
+        path = self._asset_path(asset_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return AssetProfile(**data)
+
+    def list(self, business_unit: str = None, asset_class: str = None,
+             include_retired: bool = False) -> List[AssetProfile]:
+        result = []
+        for entry in self._index["assets"]:
+            if not include_retired and entry["status"] == "retirado":
+                continue
+            if business_unit and entry["business_unit"] != business_unit:
+                continue
+            if asset_class and entry["asset_class"] != asset_class:
+                continue
+            asset = self.get(entry["asset_id"])
+            if asset is not None:
+                result.append(asset)
+        return result
+
+    def search(self, query: str) -> List[AssetProfile]:
+        """Substring simple en asset_id o asset_name, insensible a mayúsculas."""
+        q = query.lower()
+        return [
+            a for a in self.list(include_retired=True)
+            if q in a.asset_id.lower() or q in a.asset_name.lower()
+        ]
+
+    def retire(self, asset_id: str) -> None:
+        """status = 'retirado'. NO borra el archivo."""
+        asset = self.get(asset_id)
+        if asset is None:
+            raise ValueError(f"El activo '{asset_id}' no existe en el Registro.")
+        asset.status = "retirado"
+        self.update(asset)
+
+    def import_csv(self, file_obj) -> Tuple[List[AssetProfile], List[dict]]:
+        """(importados, errores_por_fila). Cada fila con asset_id ya
+        existente (en el Registro o repetido dentro del mismo archivo) es un
+        error reportado, no una sobrescritura — misma regla que create().
+
+        Reutiliza el mismo normalizador de encabezados (_norm) que usa
+        PortfolioLoader, con su propia tabla de sinónimos — no reutiliza
+        _map_columns porque esa está fija a la tabla de alias de proyectos,
+        no de activos (mismo patrón que ActualsLoader._map_cols)."""
+        import csv as _csv
+        reader = _csv.DictReader(file_obj)
+        col_map = _map_asset_columns(reader.fieldnames or [])
+
+        importados: List[AssetProfile] = []
+        errores: List[dict] = []
+        seen_in_file: set = set()
+
+        for i, row in enumerate(reader, start=2):  # fila 1 = encabezado
+            def g(field):
+                col = col_map.get(field)
+                return row.get(col, "").strip() if col else ""
+
+            asset_id = g("asset_id")
+            if not asset_id:
+                errores.append({"fila": i, "motivo": "asset_id vacío o no mapeado"})
+                continue
+            if asset_id in seen_in_file or self._asset_path(asset_id).exists():
+                errores.append({"fila": i, "asset_id": asset_id,
+                               "motivo": "asset_id duplicado — usar update() o corregir el archivo"})
+                continue
+            try:
+                asset = AssetProfile(
+                    asset_id=asset_id,
+                    asset_name=g("asset_name") or asset_id,
+                    asset_class=g("asset_class"),
+                    business_unit=g("business_unit"),
+                    install_year=int(g("install_year") or 2000),
+                )
+            except (ValueError, TypeError) as e:
+                errores.append({"fila": i, "asset_id": asset_id, "motivo": str(e)})
+                continue
+            self.create(asset)
+            seen_in_file.add(asset_id)
+            importados.append(asset)
+
+        return importados, errores
+
+
+_COL_ALIASES_ASSET = {
+    "asset_id":       ["asset_id", "id_activo", "id"],
+    "asset_name":     ["asset_name", "nombre_activo", "nombre"],
+    "asset_class":    ["asset_class", "clase_activo", "familia", "tipo_activo"],
+    "business_unit":  ["business_unit", "unidad_negocio", "bu", "negocio"],
+    "install_year":   ["install_year", "anio_instalacion", "año_instalacion"],
+}
+
+
+def _map_asset_columns(columns: List[str]) -> Dict[str, str]:
+    """Mismo patrón que PortfolioLoader._map_columns, tabla de alias propia
+    de activos (ver docstring de AssetRegistryStore.import_csv)."""
+    norm_cols = {_norm(c): c for c in columns}
+    mapping: Dict[str, str] = {}
+    for field_name, aliases in _COL_ALIASES_ASSET.items():
+        for alias in aliases:
+            if _norm(alias) in norm_cols:
+                mapping[field_name] = norm_cols[_norm(alias)]
+                break
+    return mapping
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BLOQUE 11 — PORTFOLIO LOADER (Excel / CSV → ProjectInput[])
 # ══════════════════════════════════════════════════════════════════════════════
 

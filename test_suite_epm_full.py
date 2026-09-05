@@ -48,6 +48,7 @@ from epm_core import (
     PlanVersion,
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
+    AssetRegistryStore,
     PortfolioOptimizer, BudgetPeriod,
     _preselect_by_eav,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
@@ -5111,6 +5112,106 @@ class S34_AssetProfileStatusField(unittest.TestCase):
                          asset_class="transformador", business_unit="TyD",
                          status="retirado")
         self.assertEqual(a.status, "retirado")
+
+
+class S35_AssetRegistryStore(unittest.TestCase):
+    """Núcleo mínimo del Registro de Activos (D-14) — mismo patrón de
+    persistencia que SnapshotStore: un archivo JSON por activo + _index.json."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = AssetRegistryStore(storage_dir=self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _activo(self, asset_id="AyA-TUB-001", **kw):
+        defaults = dict(asset_id=asset_id, asset_name="Tubería sector norte",
+                        asset_class="tuberia_ac", business_unit="AyA")
+        defaults.update(kw)
+        return AssetProfile(**defaults)
+
+    def test_create_y_get(self):
+        self.store.create(self._activo())
+        recuperado = self.store.get("AyA-TUB-001")
+        self.assertIsNotNone(recuperado)
+        self.assertEqual(recuperado.asset_name, "Tubería sector norte")
+
+    def test_create_con_id_existente_falla(self):
+        self.store.create(self._activo())
+        with self.assertRaises(ValueError):
+            self.store.create(self._activo())
+
+    def test_update_con_id_inexistente_falla(self):
+        with self.assertRaises(ValueError):
+            self.store.update(self._activo())
+
+    def test_update_con_id_existente_reemplaza(self):
+        self.store.create(self._activo())
+        self.store.update(self._activo(asset_name="Tubería renombrada"))
+        self.assertEqual(self.store.get("AyA-TUB-001").asset_name, "Tubería renombrada")
+
+    def test_get_inexistente_devuelve_none(self):
+        self.assertIsNone(self.store.get("NO_EXISTE"))
+
+    def test_list_excluye_retirados_por_defecto(self):
+        self.store.create(self._activo("A1", status="activo"))
+        self.store.create(self._activo("A2", status="retirado"))
+        ids = {a.asset_id for a in self.store.list()}
+        self.assertEqual(ids, {"A1"})
+
+    def test_list_include_retired_los_incluye(self):
+        self.store.create(self._activo("A1", status="activo"))
+        self.store.create(self._activo("A2", status="retirado"))
+        ids = {a.asset_id for a in self.store.list(include_retired=True)}
+        self.assertEqual(ids, {"A1", "A2"})
+
+    def test_list_filtra_por_business_unit(self):
+        self.store.create(self._activo("A1", business_unit="AyA"))
+        self.store.create(self._activo("A2", business_unit="TyD"))
+        ids = {a.asset_id for a in self.store.list(business_unit="TyD")}
+        self.assertEqual(ids, {"A2"})
+
+    def test_search_substring_en_id_o_nombre(self):
+        self.store.create(self._activo("AyA-TUB-001", asset_name="Tubería norte"))
+        self.store.create(self._activo("AyA-TUB-002", asset_name="Tubería sur"))
+        self.store.create(self._activo("AyA-BOM-001", asset_name="Bomba central"))
+        resultados = {a.asset_id for a in self.store.search("norte")}
+        self.assertEqual(resultados, {"AyA-TUB-001"})
+        resultados2 = {a.asset_id for a in self.store.search("TUB")}
+        self.assertEqual(resultados2, {"AyA-TUB-001", "AyA-TUB-002"})
+
+    def test_retire_marca_status_sin_borrar_archivo(self):
+        self.store.create(self._activo("A1"))
+        self.store.retire("A1")
+        activo = self.store.get("A1")
+        self.assertEqual(activo.status, "retirado")
+        self.assertNotIn("A1", {a.asset_id for a in self.store.list()})
+
+    def test_import_csv_importa_filas_validas(self):
+        import io
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-010,Tubería importada,tuberia_ac,AyA,2010\n"
+            "AyA-TUB-011,Otra tubería,tuberia_ac,AyA,2015\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 2)
+        self.assertEqual(len(errores), 0)
+        self.assertIsNotNone(self.store.get("AyA-TUB-010"))
+
+    def test_import_csv_fila_con_id_duplicado_contra_el_registro_es_error(self):
+        import io
+        self.store.create(self._activo("AyA-TUB-020"))
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-020,Duplicado,tuberia_ac,AyA,2010\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 0)
+        self.assertEqual(len(errores), 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
