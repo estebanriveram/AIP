@@ -2061,6 +2061,25 @@ class RiskInput:
     baseline_annual_COP: float = 0.0   # Costo anual de NO intervenir, en pesos
     residual_annual_COP: float = 0.0   # Costo anual que queda tras intervenir
 
+    # ── D-14: identidad del componente, para desglose multi-componente ──────
+    label: str = ""
+    """Nombre del componente para el desglose (ej. 'Tubería sector norte',
+    'Costo directo expansión') — sin esto, un desglose de varios componentes
+    no significa nada para quien lo lee."""
+
+    asset_type: str = ""
+    """Tipo de activo de ESTE componente — cada componente puede ser un tipo
+    de activo distinto (o ninguno, si es costo directo). Único consumidor:
+    ValueEngine._get_risk_growth_rate() por componente (ver Task 5 de un
+    plan de implementación futuro, todavía no ejecutado)."""
+
+    source_asset_id: str = ""
+    """Referencia al activo del Registro (Task 14 de un plan de
+    implementación futuro, todavía no ejecutado) del que se copiaron los
+    valores de este componente, si vino de ahí. NO es un enlace vivo — es
+    trazabilidad de origen. Editar el activo en el Registro después NO
+    cambia este componente ni ningún resultado ya calculado con él."""
+
 
 @dataclass
 class CostInput:

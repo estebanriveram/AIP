@@ -4858,6 +4858,27 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
         )
 
 
+class S33_RiskInputCamposComponente(unittest.TestCase):
+    """RiskInput gana label/asset_type/source_asset_id (D-14) — defaults
+    vacíos, no rompen ninguna construcción existente."""
+
+    def test_nuevos_campos_tienen_default_vacio(self):
+        r = RiskInput(baseline_consequence_level=3, baseline_probability_level=3)
+        self.assertEqual(r.label, "")
+        self.assertEqual(r.asset_type, "")
+        self.assertEqual(r.source_asset_id, "")
+
+    def test_nuevos_campos_se_pueden_declarar(self):
+        r = RiskInput(
+            baseline_consequence_level=3, baseline_probability_level=3,
+            label="Tubería sector norte", asset_type="tuberia_ac",
+            source_asset_id="AyA-TUB-001",
+        )
+        self.assertEqual(r.label, "Tubería sector norte")
+        self.assertEqual(r.asset_type, "tuberia_ac")
+        self.assertEqual(r.source_asset_id, "AyA-TUB-001")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────
