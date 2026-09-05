@@ -48,6 +48,7 @@ from epm_core import (
     PlanVersion,
     DependencyError,
     ValueEngine, EnterpriseOptimizer, AssetDegradationEngine,
+    AssetRegistryStore,
     PortfolioOptimizer, BudgetPeriod,
     _preselect_by_eav,
     SnapshotStore, DependencyEngine, PortfolioLoader, SensitivityAnalyst,
@@ -90,7 +91,14 @@ def _make_project(
     mutual_exclusion_ids=None, exclusion_group_id=None,
     require_outage_alignment=False,
     capex_by_year=None, declared_execution_year=0,
+    analysis_horizon_years=10,
 ) -> ProjectInput:
+    """analysis_horizon_years=10 es un default seguro y arbitrario, NO un
+    intento de reproducir el horizonte que get_horizon_for_asset() habría
+    resuelto antes de D-14 (eso depende de qué config usa cada test — ver
+    nota en el plan de implementación). Los pocos tests cuyas aserciones sí
+    dependen del valor exacto de horizonte fijan analysis_horizon_years
+    explícitamente después de llamar a este factory."""
     if drivers is None:
         drivers = [_make_driver("VD-1", [_make_sc("VD-1-A", delta=100.0)])]
     p = ProjectInput(
@@ -102,7 +110,8 @@ def _make_project(
         execution_year=exec_year,
         optimal_year=exec_year,
         drivers=drivers,
-        risk=risk,
+        risk_components=[risk] if risk else [],
+        analysis_horizon_years=analysis_horizon_years,
         is_mandatory=is_mandatory,
         is_committed=is_committed,
         committed_year=committed_year,
@@ -372,6 +381,65 @@ class S1_ValueEngine(unittest.TestCase):
         dr_ids = {d["id"] for d in r.get("driver_results", [])}
         for vid in ["VD-1", "VD-2", "VD-4"]:
             self.assertIn(vid, dr_ids, f"Driver {vid} ausente en resultado")
+
+    def test_risk_components_vacia_es_valida_y_no_aporta_riesgo(self):
+        """spec §8: risk_components vacía es válida — equivalente al risk=None
+        de antes de D-14, sin ΔR y sin reventar."""
+        p = _make_project(pid="SINRIESGO", risk=None)
+        r = self.engine.evaluate(p)
+        self.assertEqual(r["risk_analysis"]["delta_r_npv_COP"], 0.0)
+        self.assertEqual(r["risk_analysis"]["components"], [])
+        self.assertEqual(r["delta_r_npv_COP"], 0.0)
+
+    def test_risk_components_multiples_se_suman_correctamente(self):
+        """El ΔR de 2 componentes es la suma independiente de cada uno —
+        no el de uno solo, ni un promedio. Corrige una brecha real hallada
+        en revisión de código: la aritmética de suma nunca tenía cobertura
+        propia, solo el caso de 0 componentes."""
+        comp_matriz = _make_risk(cb=4, pb=4, cr=1, pr=1)
+        comp_directo = RiskInput(
+            baseline_consequence_level=1, baseline_probability_level=1,
+            baseline_annual_COP=500_000_000.0,
+        )
+        p = _make_project(pid="MULTI", risk=None)
+        p.risk_components = [comp_matriz, comp_directo]
+
+        r = self.engine.evaluate(p)
+        ra = r["risk_analysis"]
+
+        # Recalculo independiente: cada componente por separado, con el mismo
+        # horizonte/business_unit/construction_years/deferral que usó evaluate().
+        eff_cy = p.construction_years
+        h_eval = p.analysis_horizon_years
+        # evaluate() activa el WACC propio de la BU (TyD=9,5%, no el 10%
+        # global) durante todo el cálculo interno y lo restaura al salir —
+        # hay que replicar esa conmutación para que el recálculo de
+        # referencia use la misma tasa que usó internamente evaluate().
+        _orig_wacc = self.engine.wacc
+        self.engine.wacc = self.engine._get_wacc(p.business_unit)
+        try:
+            g_matriz = self.engine._get_risk_growth_rate(p.business_unit, asset_type="")
+            g_directo = self.engine._get_risk_growth_rate(p.business_unit, asset_type="")
+            r_matriz = self.engine._calc_risk(
+                comp_matriz, construction_years=eff_cy, horizon=h_eval,
+                business_unit=p.business_unit, risk_growth_rate=g_matriz, deferral_years=0)
+            r_directo = self.engine._calc_risk(
+                comp_directo, construction_years=eff_cy, horizon=h_eval,
+                business_unit=p.business_unit, risk_growth_rate=g_directo, deferral_years=0)
+        finally:
+            self.engine.wacc = _orig_wacc
+        esperado_npv = r_matriz["delta_r_npv_COP"] + r_directo["delta_r_npv_COP"]
+
+        self.assertAlmostEqual(ra["delta_r_npv_COP"], esperado_npv, delta=1.0,
+            msg="ΔR de 2 componentes no coincide con la suma independiente")
+        self.assertAlmostEqual(r["delta_r_npv_COP"], esperado_npv, delta=1.0)
+        self.assertEqual(len(ra["components"]), 2)
+        # El primer componente (matriz) es el que reporta cof_source/pof_mode
+        # a nivel agregado — no un "agregado" de ambos, documentado a propósito.
+        self.assertEqual(ra["cof_source"], r_matriz["cof_source"])
+        self.assertNotEqual(ra["cof_source"], r_directo["cof_source"],
+            msg="fixture: los dos componentes deben tener cof_source distinto "
+                "para que esta prueba demuestre algo")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1169,6 +1237,25 @@ class S9_PortfolioLoader(unittest.TestCase):
         projects, _ = self.loader.from_bytes(data, "test.csv")
         self.assertGreaterEqual(len(projects), 40)
 
+    def test_proyecto_importado_trae_analysis_horizon_years_resuelto(self):
+        """D-14: el importador ya no puede depender de que evaluate() resuelva
+        el horizonte por asset_type — debe quedar resuelto en el objeto."""
+        loader = PortfolioLoader(config=DEFAULT_CONFIG)
+        # Encabezados verificados contra _COL_ALIASES (epm_core.py, sección
+        # cerca de la clase PortfolioLoader): "id", "name", "business_unit",
+        # "investment_type", "capex_total" y "execution_year" son, cada uno,
+        # la propia clave interna (primer alias de su lista), así que valen
+        # literalmente como encabezado.
+        csv_bytes = (
+            "id,name,business_unit,investment_type,capex_total,execution_year\n"
+            "P001,Proyecto Test,TyD,Reposicion de Activos,1000000000,2026\n"
+        ).encode("utf-8")
+        projects, report = loader.from_bytes(csv_bytes, "test.csv")
+        self.assertEqual(len(projects), 1)
+        self.assertGreater(projects[0].analysis_horizon_years, 0,
+                           "El proyecto importado debe traer un horizonte > 0, "
+                           "o evaluate() fallará con el guardián del Task 5")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # S10 — SENSITIVITY ANALYST
@@ -1208,6 +1295,20 @@ class S10_Sensitivity(unittest.TestCase):
         # Ambos deben ejecutar sin error
         self.assertIsNotNone(s1)
         self.assertIsNotNone(s2)
+
+    def test_risk_multiplier_escala_consecuencia_base_sin_reventar(self):
+        """D-14: 'risk_multiplier' escalaba un campo que no existe
+        (consequence_level) — reventaba con AttributeError en cuanto se
+        usaba con un proyecto que tuviera riesgo. Ahora escala
+        baseline_consequence_level de cada componente."""
+        r = _make_risk(cb=3, pb=3, cr=1, pr=1)
+        p = _make_project(pid="SENS1", risk=r)
+        analyst = SensitivityAnalyst(_cfg())
+        # No debe lanzar AttributeError (comportamiento previo a esta corrección).
+        result = analyst.run_scenario([p], adjustments={"risk_multiplier": 1.5})
+        self.assertIn("comparison", result)
+        self.assertEqual(len(result["comparison"]), 1)
+        self.assertEqual(result["comparison"][0]["id"], "SENS1")
 
     @unittest.skipUnless(PULP_OK, "PuLP no instalado")
     def test_frontier_generated(self):
@@ -2131,10 +2232,12 @@ class S21_TratamientoTemporal(unittest.TestCase):
         # AyA y Gas SÍ pasan a monótono creciente, confirmando que la
         # prueba sigue detectando el defecto real, no solo evitando las
         # dos aserciones que fallaban.
-        return _make_project(
+        p = _make_project(
             pid=f"DIF-{bu}", bu=bu, capex=5_000_000_000,
             drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=150.0)])],
             risk=_make_risk(3, 3, 1, 1), construction_years=1)
+        p.analysis_horizon_years = ValueEngine(_cfg()).get_horizon_for_asset(p)
+        return p
 
     # ── El invariante central ────────────────────────────────────────────────
 
@@ -2383,6 +2486,7 @@ class S22_RamaWeibull(unittest.TestCase):
                           drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=50.0)])],
                           risk=r, construction_years=cy)
         p.asset_type = "_default"
+        p.analysis_horizon_years = ValueEngine(self._cfg()).get_horizon_for_asset(p)
         return p
 
     # ── El calculo independiente: la formula reescrita en la prueba ──────────
@@ -2395,12 +2499,12 @@ class S22_RamaWeibull(unittest.TestCase):
         h = max(1, h_activo - d)                       # ventana comun
         cl = c["risk_matrix"]["consequence_levels_by_bu"][self.BU]
         pl = c["risk_matrix"]["probability_levels"]
-        cof_b = cl[str(p.risk.baseline_consequence_level)]["value_COP"]
-        cof_r = cl[str(p.risk.residual_consequence_level)]["value_COP"]
-        ratio = (pl[str(p.risk.residual_probability_level)]["annual_prob"] /
-                 pl[str(p.risk.baseline_probability_level)]["annual_prob"])
-        beta, eta = p.risk.weibull_beta, p.risk.weibull_eta
-        edad = p.risk.asset_age_years
+        cof_b = cl[str(p.risk_components[0].baseline_consequence_level)]["value_COP"]
+        cof_r = cl[str(p.risk_components[0].residual_consequence_level)]["value_COP"]
+        ratio = (pl[str(p.risk_components[0].residual_probability_level)]["annual_prob"] /
+                 pl[str(p.risk_components[0].baseline_probability_level)]["annual_prob"])
+        beta, eta = p.risk_components[0].weibull_beta, p.risk_components[0].weibull_eta
+        edad = p.risk_components[0].asset_age_years
 
         def tasa(t):
             if eta <= 0 or t <= 0 or beta <= 0:
@@ -2577,13 +2681,15 @@ class S23_MILP_Nucleo(unittest.TestCase):
         seleccion: el optimizador lo quiere, no hay que forzarlo."""
         sc = SubCriterionInput(id="VD-1-A", label="x", type="monetizable",
                                delta_annual=delta, price_per_unit=price)
-        return ProjectInput(
+        p = ProjectInput(
             id=pid, name=pid, business_unit=bu,
             investment_type="Reposicion de Activos", asset_type="_default",
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=0),
             drivers=[DriverInput(id="VD-1", reto="x", sub_criteria=[sc])],
-            risk=None, execution_year=year, optimal_year=year,
+            risk_components=[], execution_year=year, optimal_year=year,
             is_mandatory=mandatory, construction_years=cy)
+        p.analysis_horizon_years = ValueEngine(self.cfg).get_horizon_for_asset(p)
+        return p
 
     def _malo(self, pid, capex=500_000_000, delta=1.0, price=335_000,
              year=2026, bu="TyD", mandatory=False, cy=1):
@@ -2758,11 +2864,12 @@ class S24_MILP_Avanzado(unittest.TestCase):
             investment_type="Reposicion de Activos", asset_type="_default",
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=0),
             drivers=[DriverInput(id="VD-1", reto="x", sub_criteria=[sc])],
-            risk=risk, execution_year=year, optimal_year=year,
+            risk_components=[risk] if risk else [], execution_year=year, optimal_year=year,
             construction_years=1, is_committed=committed,
             committed_year=committed_year,
             require_outage_alignment=require_outage)
         p.asset_id = aid
+        p.analysis_horizon_years = ValueEngine(self.cfg).get_horizon_for_asset(p)
         return p
 
     def _sel(self, result):
@@ -2839,6 +2946,48 @@ class S24_MILP_Avanzado(unittest.TestCase):
             "R8: se forzó un proyecto cuyo residual no baja del umbral — "
             "el criterio de 'es mitigante' está usando OR en vez de AND "
             "entre baseline>=tolerancia y residual<tolerancia")
+
+    def test_r8_con_dos_componentes_el_peor_caso_decide_el_baseline(self):
+        """Con 2 componentes de riesgo en el mismo proyecto, el peor de los
+        dos decide si el activo está en zona de riesgo inaceptable — y la
+        mitigación solo cuenta si el residual baja AMBOS componentes por
+        debajo del umbral (D-14)."""
+        comp_alto = RiskInput(baseline_consequence_level=5, baseline_probability_level=5,
+                              residual_consequence_level=1, residual_probability_level=1)
+        comp_bajo = RiskInput(baseline_consequence_level=2, baseline_probability_level=2,
+                              residual_consequence_level=1, residual_probability_level=1)
+        mitigante = self._proj("MULTI_MITIGANTE", 44_500_000_000, delta=1.0, aid="ACTIVO_MULTI")
+        mitigante.risk_components = [comp_alto, comp_bajo]
+        alternativa = self._proj("ALTERNATIVA2", 500_000_000, delta=2000.0)
+        periods = [ResourcePeriod(year=2026, budget_COP=44_900_000_000)]
+        result = self.opt.optimize([mitigante, alternativa], periods,
+                                   risk_tolerance_level=4)
+        sel = self._sel(result)
+        self.assertIn("MULTI_MITIGANTE", sel,
+                      "R8: con 2 componentes, el de nivel 5 (peor caso) debia forzar "
+                      "la mitigacion aunque el otro componente sea nivel 2")
+
+    def test_r8_con_dos_componentes_no_cuenta_si_el_peor_no_se_mitiga(self):
+        """El componente de peor severidad (nivel 5) nunca se mitigo (su
+        propio residual sigue en nivel 5) — aunque OTRO componente de baja
+        severidad si mejore, el proyecto NO debe forzarse: el riesgo
+        inaceptable real (el del componente grave) sigue sin bajar (D-14)."""
+        comp_grave_sin_mitigar = RiskInput(
+            baseline_consequence_level=5, baseline_probability_level=5,
+            residual_consequence_level=5, residual_probability_level=5)
+        comp_leve_mitigado = RiskInput(
+            baseline_consequence_level=2, baseline_probability_level=2,
+            residual_consequence_level=1, residual_probability_level=1)
+        no_mitigante = self._proj("MULTI_NO_MITIGA", 44_500_000_000, delta=1.0, aid="ACTIVO_MULTI_2")
+        no_mitigante.risk_components = [comp_grave_sin_mitigar, comp_leve_mitigado]
+        alternativa = self._proj("ALTERNATIVA3", 500_000_000, delta=2000.0)
+        periods = [ResourcePeriod(year=2026, budget_COP=44_900_000_000)]
+        result = self.opt.optimize([no_mitigante, alternativa], periods,
+                                   risk_tolerance_level=4)
+        sel = self._sel(result)
+        self.assertNotIn("MULTI_NO_MITIGA", sel,
+                         "R8: el componente grave nunca bajo de nivel 5 — no deberia "
+                         "contar como 'mitigante' solo porque otro componente leve mejoro")
 
     # ── R9: proyecto completado no puede volver a competir ──────────────────
 
@@ -3214,13 +3363,15 @@ class S26_CostoDelRetraso(unittest.TestCase):
         self.engine = ValueEngine(self.cfg)
 
     def _p(self, exec_year, optimal_year, drivers=None, construction_years=1):
-        return ProjectInput(
+        p = ProjectInput(
             id="P", name="P", business_unit="TyD",
             investment_type="Reposicion de Activos",
             costs=CostInput(capex_COP=0, opex_incremental_COP_year=0.0),
             execution_year=exec_year, optimal_year=optimal_year,
-            drivers=drivers or [], risk=None,
+            drivers=drivers or [], risk_components=[],
             construction_years=construction_years)
+        p.analysis_horizon_years = self.engine.get_horizon_for_asset(p)
+        return p
 
     def test_cod_usa_meses_no_anios_y_el_horizonte_del_activo(self):
         """CoD_mensual = beneficios_NPV / (horizonte_activo_años × 12)
@@ -3684,7 +3835,8 @@ class S29_ProporcionalidadMetricas(unittest.TestCase):
                          investment_type="Reposicion de Activos",
                          costs=CostInput(capex_COP=1_000_000_000, opex_incremental_COP_year=0.0),
                          execution_year=2026, optimal_year=2026,
-                         drivers=[driver], risk=None, construction_years=1)
+                         drivers=[driver], risk_components=[], construction_years=1)
+        p.analysis_horizon_years = 30
         r = self.engine.evaluate(p, deferral_years=3)
         capex_inflation = self.cfg.get("capex_inflation_rate", 0.04)
         wacc = self.engine._get_wacc("TyD")
@@ -3708,7 +3860,8 @@ class S29_ProporcionalidadMetricas(unittest.TestCase):
                          investment_type="Reposicion de Activos",
                          costs=CostInput(capex_COP=1_000_000_000, opex_incremental_COP_year=0.0),
                          execution_year=2026, optimal_year=2026,
-                         drivers=[driver], risk=None, construction_years=1)
+                         drivers=[driver], risk_components=[], construction_years=1)
+        p.analysis_horizon_years = 30
         r = self.engine.evaluate(p, deferral_years=3)
         # evaluate() activa el WACC propio de TyD durante todo el cálculo y
         # lo restaura al salir — hay que replicar esa conmutación para que
@@ -3805,18 +3958,20 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
                   residual_consequence_level=2, residual_probability_level=2)
         if weibull:
             kw.update(weibull_beta=2.5, weibull_eta=40.0, asset_age_years=edad)
-        return RiskInput(**kw)
+        return RiskInput(**kw, asset_type="transformador_potencia")
 
     def _proj(self, capex=6_000_000_000, cy=1, weibull=True, opex=50_000_000.0):
         sc = SubCriterionInput(id="VD-1-A", label="ENS", type="monetizable",
                                delta_annual=1000.0, price_per_unit=335_000.0)
-        return ProjectInput(
+        p = ProjectInput(
             id="T", name="T", business_unit="TyD",
             investment_type="Reposicion de Activos",
             asset_type="transformador_potencia", construction_years=cy,
             costs=CostInput(capex_COP=capex, opex_incremental_COP_year=opex),
             drivers=[DriverInput(id="VD-1", reto="Calidad", sub_criteria=[sc])],
-            risk=self._riesgo(weibull))
+            risk_components=[self._riesgo(weibull)])
+        p.analysis_horizon_years = self.engine.get_horizon_for_asset(p)
+        return p
 
     def _por_anio(self, resultado):
         return {y["delay_years"]: y for y in resultado["yearly_results"]}
@@ -4027,6 +4182,61 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
             msg=(f"razon obtenida {dr2/dr0:.6f}; se esperaba {esperado:.6f} "
                  f"(descuento aplicado una vez). Si se parece a {duplicado:.6f}, "
                  f"el rezago de obra se esta cobrando dos veces."))
+
+    # ── D-14: ΔR se suma por componente, y el growth rate reportado ─────────
+    # refleja el PRIMER componente, no un lookup aparte a nivel de proyecto ──
+
+    def test_dos_componentes_con_asset_type_distinto_se_suman_y_reportan_el_primero(self):
+        """El ΔR de 2 componentes con asset_type distinto es la suma
+        independiente de cada uno, y el risk_growth_rate reportado refleja
+        el PRIMER componente — no un lookup aparte a nivel de proyecto que
+        podria no coincidir con lo que el loop realmente uso (hallazgo de
+        code review de la migracion de _optimal_timing_inner, D-14).
+
+        El primer componente (comp_generico) NO declara asset_type propio, y
+        por eso cae a la tasa de la BU (0.15). El proyecto SI declara
+        asset_type="transformador_potencia" (0.12) — un lookup a nivel de
+        proyecto reportaria 0.12, distinto de lo que el primer componente
+        realmente usa. Solo con esta divergencia la prueba puede detectar
+        una regresion al bug original."""
+        comp_generico = RiskInput(
+            baseline_consequence_level=4, baseline_probability_level=4,
+            residual_consequence_level=2, residual_probability_level=2,
+            asset_type="",  # sin asset_type propio -> tasa de la BU (0.15)
+        )
+        comp_transformador = self._riesgo(weibull=False)  # asset_type="transformador_potencia" (0.12)
+
+        p = self._proj(weibull=False)
+        p.risk_components = [comp_generico, comp_transformador]
+        resultado_dos = self.engine.optimal_timing_analysis(p)
+        anios_dos = self._por_anio(resultado_dos)
+
+        p_solo_generico = self._proj(weibull=False)
+        p_solo_generico.risk_components = [comp_generico]
+        anios_generico = self._por_anio(self.engine.optimal_timing_analysis(p_solo_generico))
+
+        p_solo_transformador = self._proj(weibull=False)
+        p_solo_transformador.risk_components = [comp_transformador]
+        anios_transformador = self._por_anio(self.engine.optimal_timing_analysis(p_solo_transformador))
+
+        for t in (0, 1, 3):
+            if t not in anios_dos or t not in anios_generico or t not in anios_transformador:
+                continue
+            esperado = (anios_generico[t]["delta_r_npv_COP"]
+                        + anios_transformador[t]["delta_r_npv_COP"])
+            self.assertAlmostEqual(
+                anios_dos[t]["delta_r_npv_COP"], esperado,
+                delta=max(1.0, abs(esperado) * 1e-9),
+                msg=(f"t={t}: la suma de 2 componentes con asset_type distinto "
+                     f"no coincide con la suma independiente de cada uno por separado"))
+
+        # El growth rate reportado debe ser el del PRIMER componente
+        # (comp_generico, sin asset_type propio -> tasa de la BU = 0.15), NO
+        # el lookup a nivel de proyecto (project.asset_type=
+        # "transformador_potencia" -> 0.12) que el loop interno ya no usa
+        # para el computo real.
+        g_esperado = self.engine._get_risk_growth_rate("TyD", asset_type="")
+        self.assertAlmostEqual(resultado_dos["risk_growth_rate"], g_esperado, places=9)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4576,6 +4786,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_X",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ALT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4583,6 +4794,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_X",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Confirmar la premisa del caso antes de probar la función: la larga
         # debe tener mayor VNT crudo Y menor EAV que la corta — si el config
         # cambia y esto deja de cumplirse, la prueba debe fallar aquí, no en
@@ -4725,6 +4937,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_OPT",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="OPT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4732,6 +4945,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_OPT",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         periods = [BudgetPeriod(year=2026, budget_COP=100_000_000_000)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
 
@@ -4764,6 +4978,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_INF",
         )
         larga.asset_type = "transformador_potencia"
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="INF_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4771,6 +4986,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_INF", is_mandatory=True,
         )
         corta.asset_type = "sistema_control_SCADA"
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Presupuesto 0: INF_CORTA (la ganadora por EAV, ahora obligatoria)
         # no cabe en ningún lado — el solver debe reportar infactible.
         periods = [BudgetPeriod(year=2026, budget_COP=0.0)]
@@ -4795,6 +5011,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT",
         )
         larga.asset_type = "transformador_potencia"  # TyD: 30 años
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ENT_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4802,6 +5019,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT",
         )
         corta.asset_type = "sistema_control_SCADA"  # TyD: 10 años
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         periods = [ResourcePeriod(year=2026, budget_COP=100_000_000_000)]
         result = opt.optimize([larga, corta], periods, base_year=2026)
 
@@ -4834,6 +5052,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT_INF",
         )
         larga.asset_type = "transformador_potencia"
+        larga.analysis_horizon_years = self.engine.get_horizon_for_asset(larga)
         sc_chica = _make_sc("VD-1-A", delta=22_000.0, price=335_000)
         corta = _make_project(
             pid="ENT_INF_CORTA", capex=8_000_000_000, exec_year=2026,
@@ -4841,6 +5060,7 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             exclusion_group_id="NECESIDAD_ENT_INF", is_mandatory=True,
         )
         corta.asset_type = "sistema_control_SCADA"
+        corta.analysis_horizon_years = self.engine.get_horizon_for_asset(corta)
         # Solo ENT_INF_CORTA es obligatoria (la ganadora por EAV) — si ambas
         # lo fueran, _preselect_by_eav lanzaría su propio ValueError de "dos
         # obligatorias" antes de llegar al solver, que no es el escenario
@@ -4856,6 +5076,160 @@ class S32_PreseleccionPorEAV(unittest.TestCase):
             "La descartada por EAV debe seguir visible en postponed aunque "
             "el solver resulte infactible.",
         )
+
+
+class S33_RiskInputCamposComponente(unittest.TestCase):
+    """RiskInput gana label/asset_type/source_asset_id (D-14) — defaults
+    vacíos, no rompen ninguna construcción existente."""
+
+    def test_nuevos_campos_tienen_default_vacio(self):
+        r = RiskInput(baseline_consequence_level=3, baseline_probability_level=3)
+        self.assertEqual(r.label, "")
+        self.assertEqual(r.asset_type, "")
+        self.assertEqual(r.source_asset_id, "")
+
+    def test_nuevos_campos_se_pueden_declarar(self):
+        r = RiskInput(
+            baseline_consequence_level=3, baseline_probability_level=3,
+            label="Tubería sector norte", asset_type="tuberia_ac",
+            source_asset_id="AyA-TUB-001",
+        )
+        self.assertEqual(r.label, "Tubería sector norte")
+        self.assertEqual(r.asset_type, "tuberia_ac")
+        self.assertEqual(r.source_asset_id, "AyA-TUB-001")
+
+
+class S34_AssetProfileStatusField(unittest.TestCase):
+    """AssetProfile gana status (activo/retirado) para soft-delete (D-14)."""
+
+    def test_asset_profile_status_default_activo(self):
+        a = AssetProfile(asset_id="A1", asset_name="Transformador 1",
+                         asset_class="transformador", business_unit="TyD")
+        self.assertEqual(a.status, "activo")
+
+    def test_asset_profile_status_se_puede_declarar_retirado(self):
+        a = AssetProfile(asset_id="A2", asset_name="Transformador 2",
+                         asset_class="transformador", business_unit="TyD",
+                         status="retirado")
+        self.assertEqual(a.status, "retirado")
+
+
+class S35_AssetRegistryStore(unittest.TestCase):
+    """Núcleo mínimo del Registro de Activos (D-14) — mismo patrón de
+    persistencia que SnapshotStore: un archivo JSON por activo + _index.json."""
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.mkdtemp()
+        self.store = AssetRegistryStore(storage_dir=self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _activo(self, asset_id="AyA-TUB-001", **kw):
+        defaults = dict(asset_id=asset_id, asset_name="Tubería sector norte",
+                        asset_class="tuberia_ac", business_unit="AyA")
+        defaults.update(kw)
+        return AssetProfile(**defaults)
+
+    def test_create_y_get(self):
+        self.store.create(self._activo())
+        recuperado = self.store.get("AyA-TUB-001")
+        self.assertIsNotNone(recuperado)
+        self.assertEqual(recuperado.asset_name, "Tubería sector norte")
+
+    def test_create_con_id_existente_falla(self):
+        self.store.create(self._activo())
+        with self.assertRaises(ValueError):
+            self.store.create(self._activo())
+
+    def test_update_con_id_inexistente_falla(self):
+        with self.assertRaises(ValueError):
+            self.store.update(self._activo())
+
+    def test_update_con_id_existente_reemplaza(self):
+        self.store.create(self._activo())
+        self.store.update(self._activo(asset_name="Tubería renombrada"))
+        self.assertEqual(self.store.get("AyA-TUB-001").asset_name, "Tubería renombrada")
+
+    def test_get_inexistente_devuelve_none(self):
+        self.assertIsNone(self.store.get("NO_EXISTE"))
+
+    def test_list_excluye_retirados_por_defecto(self):
+        self.store.create(self._activo("A1", status="activo"))
+        self.store.create(self._activo("A2", status="retirado"))
+        ids = {a.asset_id for a in self.store.list()}
+        self.assertEqual(ids, {"A1"})
+
+    def test_list_include_retired_los_incluye(self):
+        self.store.create(self._activo("A1", status="activo"))
+        self.store.create(self._activo("A2", status="retirado"))
+        ids = {a.asset_id for a in self.store.list(include_retired=True)}
+        self.assertEqual(ids, {"A1", "A2"})
+
+    def test_list_filtra_por_business_unit(self):
+        self.store.create(self._activo("A1", business_unit="AyA"))
+        self.store.create(self._activo("A2", business_unit="TyD"))
+        ids = {a.asset_id for a in self.store.list(business_unit="TyD")}
+        self.assertEqual(ids, {"A2"})
+
+    def test_search_substring_en_id_o_nombre(self):
+        self.store.create(self._activo("AyA-TUB-001", asset_name="Tubería norte"))
+        self.store.create(self._activo("AyA-TUB-002", asset_name="Tubería sur"))
+        self.store.create(self._activo("AyA-BOM-001", asset_name="Bomba central"))
+        resultados = {a.asset_id for a in self.store.search("norte")}
+        self.assertEqual(resultados, {"AyA-TUB-001"})
+        resultados2 = {a.asset_id for a in self.store.search("TUB")}
+        self.assertEqual(resultados2, {"AyA-TUB-001", "AyA-TUB-002"})
+
+    def test_retire_marca_status_sin_borrar_archivo(self):
+        self.store.create(self._activo("A1"))
+        self.store.retire("A1")
+        activo = self.store.get("A1")
+        self.assertEqual(activo.status, "retirado")
+        self.assertNotIn("A1", {a.asset_id for a in self.store.list()})
+
+    def test_import_csv_importa_filas_validas(self):
+        import io
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-010,Tubería importada,tuberia_ac,AyA,2010\n"
+            "AyA-TUB-011,Otra tubería,tuberia_ac,AyA,2015\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 2)
+        self.assertEqual(len(errores), 0)
+        self.assertIsNotNone(self.store.get("AyA-TUB-010"))
+
+    def test_import_csv_fila_con_id_duplicado_contra_el_registro_es_error(self):
+        import io
+        self.store.create(self._activo("AyA-TUB-020"))
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-020,Duplicado,tuberia_ac,AyA,2010\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 0)
+        self.assertEqual(len(errores), 1)
+
+    def test_import_csv_fila_valida_se_importa_aunque_otra_fila_sea_duplicada(self):
+        """Una fila invalida (duplicada) no debe bloquear la importacion de
+        las demas filas validas del mismo archivo — el reporte es por fila,
+        no todo-o-nada."""
+        import io
+        self.store.create(self._activo("AyA-TUB-030"))
+        csv_content = (
+            "asset_id,asset_name,asset_class,business_unit,install_year\n"
+            "AyA-TUB-030,Duplicado,tuberia_ac,AyA,2010\n"
+            "AyA-TUB-031,Valida,tuberia_ac,AyA,2012\n"
+        )
+        importados, errores = self.store.import_csv(io.StringIO(csv_content))
+        self.assertEqual(len(importados), 1)
+        self.assertEqual(importados[0].asset_id, "AyA-TUB-031")
+        self.assertEqual(len(errores), 1)
+        self.assertEqual(errores[0]["asset_id"], "AyA-TUB-030")
+        self.assertIsNotNone(self.store.get("AyA-TUB-031"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

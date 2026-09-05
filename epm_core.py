@@ -2061,6 +2061,25 @@ class RiskInput:
     baseline_annual_COP: float = 0.0   # Costo anual de NO intervenir, en pesos
     residual_annual_COP: float = 0.0   # Costo anual que queda tras intervenir
 
+    # ── D-14: identidad del componente, para desglose multi-componente ──────
+    label: str = ""
+    """Nombre del componente para el desglose (ej. 'Tubería sector norte',
+    'Costo directo expansión') — sin esto, un desglose de varios componentes
+    no significa nada para quien lo lee."""
+
+    asset_type: str = ""
+    """Tipo de activo de ESTE componente — cada componente puede ser un tipo
+    de activo distinto (o ninguno, si es costo directo). Único consumidor:
+    ValueEngine._get_risk_growth_rate() por componente (ver Task 5 de un
+    plan de implementación futuro, todavía no ejecutado)."""
+
+    source_asset_id: str = ""
+    """Referencia al activo del Registro (Task 14 de un plan de
+    implementación futuro, todavía no ejecutado) del que se copiaron los
+    valores de este componente, si vino de ahí. NO es un enlace vivo — es
+    trazabilidad de origen. Editar el activo en el Registro después NO
+    cambia este componente ni ningún resultado ya calculado con él."""
+
 
 @dataclass
 class CostInput:
@@ -2100,7 +2119,19 @@ class ProjectInput:
     execution_year: int = 2026
     optimal_year: int = 2026
     drivers: list = field(default_factory=list)
-    risk: Optional[RiskInput] = None
+    risk_components: List[RiskInput] = field(default_factory=list)
+    """Cero, uno o varios componentes de inacción — cada uno con su propia
+    clasificación (matriz genérica / curva física / costo directo), calculados
+    de forma independiente y sumados (ver ValueEngine._evaluate_inner).
+    Reemplaza el campo 'risk' — reemplazo limpio, sin campo paralelo de
+    compatibilidad (decisión explícita del usuario, ver spec §9)."""
+
+    analysis_horizon_years: int = 0
+    """Horizonte único del proyecto, declarado por el analista — alimenta
+    beneficios, CADA componente de risk_components, EAV, VEI y Costo de
+    Posponer. 0 = no declarado; evaluate() debe fallar explícitamente en ese
+    caso (ver Task 5, not yet executed), sin fallback silencioso a ningún
+    horizonte por defecto."""
     dependencies: list = field(default_factory=list)
     """IDs de proyectos que deben estar seleccionados ANTES que este (restricción
     simple: el padre debe estar en el portafolio, sin lag temporal mínimo).
@@ -3543,7 +3574,7 @@ class ValueEngine:
         _orig_wacc_marg = self.wacc
         self.wacc = self._get_wacc(alternative.business_unit)
         try:
-            horizon  = self.get_horizon_for_asset(alternative)
+            horizon  = alternative.analysis_horizon_years
             eav_marg = self.calc_eav(vnt_marg, horizon)
             capex    = alternative.costs.capex_COP
             # VEI_EAV: EAV / (CAPEX / horizon) — normaliza eficiencia entre horizontes
@@ -4039,9 +4070,9 @@ class ValueEngine:
         Retorna None si el tipo no tiene parámetros configurados (usar exponencial).
 
         Uso sugerido (en evaluate() o ProjectWizard):
-            params = engine._get_weibull_params_for_asset(project.asset_type)
+            params = engine._get_weibull_params_for_asset(component.asset_type)
             if params:
-                project.risk.weibull_beta, project.risk.weibull_eta = params
+                component.weibull_beta, component.weibull_eta = params
         """
         ot = self.config.get("optimal_timing", {})
         wp = ot.get("weibull_params_by_asset", {})
@@ -4094,7 +4125,7 @@ class ValueEngine:
         # Issue 9: horizonte por tipo de activo — un transformador (30a) tiene CoD
         # mensual 3× menor que si se divide por el horizonte global de 10a.
         # Usar el horizonte incorrecto sobreestima la urgencia para activos de larga vida.
-        h_asset = self.get_horizon_for_asset(project)
+        h_asset = project.analysis_horizon_years
         horizon_months = h_asset * 12
         # CoD sobre beneficios de drivers únicamente — ΔR separado
         cod_monthly = benefits_npv / horizon_months if horizon_months > 0 else 0.0
@@ -4132,7 +4163,13 @@ class ValueEngine:
         # 1. Beneficios ajustados por temporalidad (construction_years + benefit_start_offsets)
         #    Cada driver puede tener un lag diferente según configura el analista.
         #    Ref: Copperleaf C55 §5.3 — Execution Duration & Benefit Timing.
-        h_asset = self.get_horizon_for_asset(project)
+        h_asset = project.analysis_horizon_years
+        if h_asset <= 0:
+            raise ValueError(
+                f"Proyecto '{project.id}': analysis_horizon_years no fue declarado "
+                f"(o es 0). No hay horizonte por defecto — el analista debe "
+                f"declararlo explícitamente antes de evaluar (spec §8)."
+            )
 
         # Ventana de evaluación COMÚN. Sin esto, diferir d años seguía dando
         # los mismos h años de beneficios, solo que empezando más tarde: cada
@@ -4158,7 +4195,9 @@ class ValueEngine:
 
         # 2. Riesgo mitigado
         # Si hay delta_r_override_COP (portafolios no-Sostenimiento), se usa directamente.
-        # De lo contrario, se calcula desde RiskInput (matriz 5×5) como antes.
+        # De lo contrario, se agrega desde risk_components (D-14): cada componente
+        # se calcula de forma independiente (matriz genérica / curva física / costo
+        # directo) con _calc_risk(), sin cambios internos a esa función, y se suma.
         risk_result = {}
         delta_r_npv = 0.0
         _dr_override = getattr(project, "delta_r_override_COP", 0.0)
@@ -4171,21 +4210,62 @@ class ValueEngine:
                 "delta_r_npv_COP": delta_r_npv,
                 "source": "override_portafolio",
             }
-        elif project.risk:
-            h_asset = self.get_horizon_for_asset(project)
-            g_asset = self._get_risk_growth_rate(
-                project.business_unit,
-                asset_type=getattr(project, "asset_type", ""),
-            )
-            risk_result = self._calc_risk(
-                project.risk,
-                construction_years=eff_cy,
-                horizon=h_eval,
-                business_unit=project.business_unit,
-                risk_growth_rate=g_asset,
-                deferral_years=deferral_years,
-            )
-            delta_r_npv = risk_result["delta_r_npv_COP"]
+        else:
+            risk_components_results = []
+            delta_r_annual_total = 0.0
+            delta_r_npv_total = 0.0
+            exposure_total = 0.0
+            warnings_total: list = []
+            for component in project.risk_components:
+                g_comp = self._get_risk_growth_rate(
+                    project.business_unit,
+                    asset_type=getattr(component, "asset_type", ""),
+                )
+                r = self._calc_risk(
+                    component,
+                    construction_years=eff_cy,
+                    horizon=h_eval,
+                    business_unit=project.business_unit,
+                    risk_growth_rate=g_comp,
+                    deferral_years=deferral_years,
+                )
+                r["label"] = component.label
+                r["source_asset_id"] = component.source_asset_id
+                risk_components_results.append(r)
+                delta_r_annual_total += r["delta_r_annual_COP"]
+                delta_r_npv_total    += r["delta_r_npv_COP"]
+                exposure_total       += r.get("deferral_exposure_COP", 0.0)
+                warnings_total.extend(r.get("warnings", []))
+
+            delta_r_npv = delta_r_npv_total
+            _first = risk_components_results[0] if risk_components_results else {}
+            risk_result = {
+                # Compatibilidad: mismas claves que antes de D-14, ahora agregadas.
+                # Con 0-1 componentes son idénticas al comportamiento previo; con
+                # 2+, la suma es la agregación real. Las claves de forma/origen
+                # (cof_source, pof_mode, etc.) reportan el PRIMER componente — no
+                # existe un "agregado" con sentido único para ellas cuando cada
+                # componente puede tomar una rama distinta (matriz/Weibull/directo).
+                "baseline_annual_COP":   sum(r.get("baseline_annual_COP", 0.0) for r in risk_components_results),
+                "residual_annual_COP":   sum(r.get("residual_annual_COP", 0.0) for r in risk_components_results),
+                "delta_r_annual_COP":    delta_r_annual_total,
+                "delta_r_npv_COP":       delta_r_npv_total,
+                "deferral_exposure_COP": exposure_total,
+                "horizon_used":          h_eval,
+                "cof_source":            _first.get("cof_source"),
+                "cof_mode":              _first.get("cof_mode"),
+                "pof_mode":              _first.get("pof_mode"),
+                "risk_growth_rate_used": _first.get("risk_growth_rate_used"),
+                "weibull_beta":          _first.get("weibull_beta"),
+                "weibull_eta":           _first.get("weibull_eta"),
+                "asset_age_years":       _first.get("asset_age_years"),
+                "pof_baseline_at_eval":  _first.get("pof_baseline_at_eval"),
+                "tasa_falla_anual_base": _first.get("tasa_falla_anual_base"),
+                "pof_residual_at_eval":  _first.get("pof_residual_at_eval"),
+                "deferral_years":        deferral_years,
+                "warnings":              warnings_total,
+                "components":            risk_components_results,
+            }
 
         # 3. Cost of Delay — Copperleaf C55 §6.2
         #    Solo depende de los beneficios de los drivers y el retraso.
@@ -4283,7 +4363,7 @@ class ValueEngine:
 
         # Horizonte dinámico por tipo de activo
         # Permite EAV justo para comparar activos de larga vida vs. tecnología
-        horizon_asset = self.get_horizon_for_asset(project)
+        horizon_asset = h_asset
         eav_cop = self.calc_eav(net_value, horizon_asset)
         # VEI_EAV = EAV / (CAPEX/H) — eficiencia anualizada, comparable entre tipos
         vei_eav = eav_cop / (capex_pv / horizon_asset) if capex_pv > 0 and horizon_asset > 0 else 0.0
@@ -4338,7 +4418,7 @@ class ValueEngine:
             "capex_pv_COP": capex_pv,           # el que entra a la ecuación
             "capex_schedule_pv_COP": capex_pv_por_tramo,  # cada tramo, para auditoría
             "opex_incremental_npv_COP": opex_npv,
-            "analysis_horizon_years": self.horizon,
+            "analysis_horizon_years": project.analysis_horizon_years,
             "horizon_asset_years": horizon_asset,
             "wacc": self.wacc,
             "factor_npv": self._factor_npv,
@@ -4538,7 +4618,12 @@ class ValueEngine:
         capex_base = project.costs.capex_COP
 
         # Issue 8: horizonte del activo para NPV del ΔR en cada año t
-        h_asset_timing = self.get_horizon_for_asset(project)
+        h_asset_timing = project.analysis_horizon_years
+        if h_asset_timing <= 0:
+            raise ValueError(
+                f"Proyecto '{project.id}': analysis_horizon_years no fue declarado "
+                f"(o es 0) — optimal_timing_analysis() no puede escanear sin él."
+            )
 
         # Issue 2b: lag fijo de construcción — se aplica igual que en evaluate().
         # En timing, tf cubre el delay de la decisión; fd_constr cubre el tiempo
@@ -4577,10 +4662,11 @@ class ValueEngine:
             modified_project.costs = copy.deepcopy(project.costs)
             modified_project.costs.capex_COP = capex_t
 
-            # Escalar el riesgo por degradación — Weibull o exponencial
-            if modified_project.risk:
-                risk_inp = project.risk
-
+            # Escalar el riesgo por degradación — Weibull o exponencial —
+            # sumado sobre TODOS los componentes de risk_components (D-14).
+            degraded_delta_r_annual = 0.0
+            degraded_delta_r_npv    = 0.0
+            for risk_inp in project.risk_components:
                 if risk_inp.weibull_beta > 0 and risk_inp.weibull_eta > 0:
                     # ── Rama Weibull: PoF(age + t) de la curva real ──────────
                     # Reutiliza la lógica de _calc_risk() con deferral=t para
@@ -4593,23 +4679,27 @@ class ValueEngine:
                         risk_growth_rate=0.0,        # ignorado en modo Weibull
                         deferral_years=t,
                     )
-                    degraded_delta_r_annual = _risk_t["delta_r_annual_COP"]
+                    comp_delta_r_annual = _risk_t["delta_r_annual_COP"]
                     # _calc_risk() YA aplicó internamente el descuento por años
                     # de obra (su fd_lag). Aquí solo falta el del retraso de la
                     # decisión. Aplicar además fd_constr más abajo lo cobraba
                     # DOS VECES, y el defecto vivía solo en esta rama: la
                     # exponencial arma su NPV desde cero y sí lo necesita.
-                    degraded_delta_r_npv    = _risk_t["delta_r_npv_COP"] * tf
+                    comp_delta_r_npv    = _risk_t["delta_r_npv_COP"] * tf
 
                 else:
                     # ── Rama exponencial ─────────────────────────────
+                    g_comp = self._get_risk_growth_rate(
+                        project.business_unit,
+                        asset_type=getattr(risk_inp, "asset_type", ""),
+                    )
                     original_risk_annual = self._calc_risk(
                         risk_inp,
                         business_unit=project.business_unit,
                     )["delta_r_annual_COP"]
-                    degraded_delta_r_annual = original_risk_annual * ((1 + risk_growth_rate) ** t)
+                    comp_delta_r_annual = original_risk_annual * ((1 + g_comp) ** t)
                     # Anualidad Gordon — consistente con _calc_risk() (C55 §4.3 + ).
-                    _g  = risk_growth_rate
+                    _g  = g_comp
                     _r  = self.wacc
                     _h  = h_asset_timing
                     if abs(_r - _g) < 1e-9:
@@ -4621,11 +4711,11 @@ class ValueEngine:
                     # Esta rama construye el valor presente desde cero, así que
                     # aquí SÍ hay que aplicar los dos descuentos: el del retraso
                     # de la decisión y el de los años de obra.
-                    degraded_delta_r_npv = (degraded_delta_r_annual * gordon_timing
-                                            * tf * fd_constr)
-            else:
-                degraded_delta_r_annual = 0.0
-                degraded_delta_r_npv    = 0.0
+                    comp_delta_r_npv = (comp_delta_r_annual * gordon_timing
+                                        * tf * fd_constr)
+
+                degraded_delta_r_annual += comp_delta_r_annual
+                degraded_delta_r_npv    += comp_delta_r_npv
 
             # ── Beneficios de los drivers (constantes — la inversión no cambia) ──
             driver_results = [
@@ -4685,10 +4775,22 @@ class ValueEngine:
         # Si el año óptimo es t=0, el proyecto no puede esperar
         urgency = "AHORA"   if optimal["delay_years"] == 0 else                   "PRONTO"  if optimal["delay_years"] <= 1 else                   "FLEXIBLE"
 
+        _first_risk = project.risk_components[0] if project.risk_components else None
         _pof_mode = ("weibull"
-                     if (project.risk and project.risk.weibull_beta > 0
-                         and project.risk.weibull_eta > 0)
+                     if (_first_risk and _first_risk.weibull_beta > 0
+                         and _first_risk.weibull_eta > 0)
                      else "exponential")
+        # D-14: el risk_growth_rate reportado debe reflejar lo que realmente
+        # usó el PRIMER componente dentro del loop (via g_comp), no un lookup
+        # aparte a nivel de proyecto — mismo criterio que _evaluate_inner usa
+        # para sus campos de "forma" (cof_source, pof_mode, etc.): no existe
+        # un agregado con sentido único cuando cada componente puede tener su
+        # propia tasa de crecimiento de riesgo.
+        _first_growth_rate = (
+            self._get_risk_growth_rate(project.business_unit,
+                                       asset_type=getattr(_first_risk, "asset_type", ""))
+            if _first_risk else risk_growth_rate
+        )
 
         return {
             "base_year":            base_year,
@@ -4698,11 +4800,11 @@ class ValueEngine:
             "t0_net_value":         t0_result["net_value_COP"],
             "delta_vs_t0":          optimal["net_value_COP"] - t0_result["net_value_COP"],
             "urgency":              urgency,
-            "pof_mode":             _pof_mode,               # "weibull" | "exponential"
-            "risk_growth_rate":     risk_growth_rate if _pof_mode == "exponential" else None,
-            "weibull_beta":         project.risk.weibull_beta if project.risk else None,
-            "weibull_eta":          project.risk.weibull_eta  if project.risk else None,
-            "asset_age_years":      project.risk.asset_age_years if project.risk else None,
+            "pof_mode":             _pof_mode,               # "weibull" | "exponential" — del PRIMER componente
+            "risk_growth_rate":     _first_growth_rate if _pof_mode == "exponential" else None,
+            "weibull_beta":         _first_risk.weibull_beta if _first_risk else None,
+            "weibull_eta":          _first_risk.weibull_eta  if _first_risk else None,
+            "asset_age_years":      _first_risk.asset_age_years if _first_risk else None,
             "capex_inflation_rate": capex_inflation_rate,
             "yearly_results":       yearly_results,
         }
@@ -5043,6 +5145,12 @@ class ProjectWizard:
         if include_risk != "n":
             risk_input = self._capture_risk()
 
+        # 6b. Horizonte de análisis (D-14) — sin default precargado: el
+        # analista debe declararlo, igual que en el asistente Streamlit.
+        print()
+        print(c("  HORIZONTE DE ANÁLISIS", Colors.BOLD))
+        analysis_horizon = ask("Horizonte de análisis (años)", cast=int, required=True)
+
         # 7. Dependencias
         deps = []
         print()
@@ -5096,7 +5204,8 @@ class ProjectWizard:
             execution_year=exec_year,
             optimal_year=opt_year,
             drivers=driver_inputs,
-            risk=risk_input,
+            risk_components=[risk_input] if risk_input else [],
+            analysis_horizon_years=analysis_horizon,
             dependencies=deps,
             is_mandatory=is_mandatory,
             construction_years=construction_years,
@@ -5977,11 +6086,17 @@ class SensitivityAnalyst:
                             for k in ("delta_annual", "annual_benefit_COP", "quantity"):
                                 if k in sc:
                                     sc[k] = sc[k] * benefit_mult
-            # Riesgo — se escala consecuencia del input de riesgo
-            if risk_mult != 1.0 and p.risk:
-                p.risk.consequence_level = min(
-                    5.0, p.risk.consequence_level * risk_mult
-                )
+            # Riesgo — se escala la consecuencia BASE de cada componente
+            # (D-14: bug pre-existente corregido — el campo 'consequence_level'
+            # no existe en RiskInput desde siempre; esta línea nunca se había
+            # ejercitado con éxito. El residual no se toca: refleja el efecto
+            # de la propia mitigación, no la severidad del mundo externo que
+            # este escenario de sensibilidad busca perturbar).
+            if risk_mult != 1.0:
+                for comp in (p.risk_components or []):
+                    comp.baseline_consequence_level = min(
+                        5, int(round(comp.baseline_consequence_level * risk_mult))
+                    )
             return p
 
         base_results, mod_results = [], []
@@ -7417,14 +7532,21 @@ class EnterpriseOptimizer:
             _asset_mit_map: dict = {}
             for i, proj in enumerate(projects):
                 aid = getattr(proj, "asset_id", "") or ""
-                if not aid or not proj.risk:
+                if not aid or not proj.risk_components:
                     continue
-                bl_level = self._risk_matrix_level(
-                    proj.risk.baseline_consequence_level,
-                    proj.risk.baseline_probability_level)
-                re_level = self._risk_matrix_level(
-                    proj.risk.residual_consequence_level,
-                    proj.risk.residual_probability_level)
+                # D-14: con varios componentes, el peor caso decide si el activo
+                # está en riesgo inaceptable (baseline), y la mitigación solo
+                # cuenta si baja TODOS los componentes por debajo del umbral
+                # (residual) — de lo contrario un componente sin intervenir
+                # seguiría siendo un riesgo inaceptable aunque otro sí se mitigue.
+                bl_level = max(
+                    self._risk_matrix_level(c.baseline_consequence_level,
+                                            c.baseline_probability_level)
+                    for c in proj.risk_components)
+                re_level = max(
+                    self._risk_matrix_level(c.residual_consequence_level,
+                                            c.residual_probability_level)
+                    for c in proj.risk_components)
                 if aid not in _asset_mit_map:
                     _asset_mit_map[aid] = {"baseline_level": bl_level, "mit_idxs": []}
                 # El proyecto mitiga el riesgo si: baseline ≥ umbral Y residual < umbral
@@ -7486,14 +7608,18 @@ class EnterpriseOptimizer:
                 for i, proj in enumerate(projects):
                     # Riesgo base anual del proyecto (si tiene perfil de riesgo)
                     risk_proxy = proj.costs.capex_COP * 0.05  # 5% CAPEX = riesgo proxy
-                    if proj.risk:
+                    if proj.risk_components:
+                        # D-14: suma el proxy EAL de CADA componente — misma
+                        # convención de agregación que delta_r_npv en evaluate().
                         rm = self.config.get("risk_matrix", {})
                         cof_by_bu = rm.get("consequence_levels_by_bu", {})
                         cl = cof_by_bu.get(proj.business_unit) or rm.get("consequence_levels", {})
                         pl = rm.get("probability_levels", {})
-                        c_val = cl.get(str(proj.risk.baseline_consequence_level), {}).get("value_COP", 0)
-                        p_val = pl.get(str(proj.risk.baseline_probability_level), {}).get("annual_prob", 0)
-                        risk_proxy = c_val * p_val
+                        risk_proxy = 0.0
+                        for c in proj.risk_components:
+                            c_val = cl.get(str(c.baseline_consequence_level), {}).get("value_COP", 0)
+                            p_val = pl.get(str(c.baseline_probability_level), {}).get("annual_prob", 0)
+                            risk_proxy += c_val * p_val
                     risk_expr.append(risk_proxy * x[i][t])
                 if risk_expr:
                     prob += (
@@ -8957,6 +9083,15 @@ class AssetProfile:
     step_pof_values: List[float] = field(default_factory=lambda: [0.05, 0.25, 0.70])
     acceleration_factor: float = 2.0       # Para modelo acelerado
 
+    # ── D-14: soft-delete para el Registro de Activos ───────────────────────
+    status: str = "activo"   # "activo" | "retirado"
+    """Nunca se borra un AssetProfile, se retira (ver AssetRegistryStore.retire,
+    Task 14 de un plan de implementación futuro, todavía no ejecutado).
+    list() excluye retirados por defecto. Un activo reemplazado físicamente
+    no debe desaparecer del Registro: si un proyecto pasado lo referenció
+    (RiskInput.source_asset_id), debe poder auditarse contra qué datos se
+    evaluó."""
+
 
 @dataclass
 class DegradationResult:
@@ -10139,6 +10274,189 @@ class SnapshotStore:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# BLOQUE 10b — ASSET REGISTRY STORE (Registro de Activos, D-14)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class AssetRegistryStore:
+    """
+    Registro de Activos — núcleo mínimo (D-14).
+
+    Mismo patrón de persistencia que SnapshotStore: un archivo JSON por
+    registro + un _index.json liviano para listar/buscar sin abrir cada
+    archivo. A diferencia de SnapshotStore (append-only, ids generados con
+    uuid4), aquí el asset_id lo declara el analista — create()/update() son
+    simétricos y ninguno sobrescribe en silencio.
+    """
+
+    def __init__(self, storage_dir: str = "./activos_registrados"):
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self._index_path = self.storage_dir / "_index.json"
+        self._index = self._load_index()
+
+    def _load_index(self) -> dict:
+        if self._index_path.exists():
+            with open(self._index_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {"assets": [], "created": datetime.now(timezone.utc).isoformat()}
+
+    def _save_index(self) -> None:
+        with open(self._index_path, 'w', encoding='utf-8') as f:
+            json.dump(self._index, f, ensure_ascii=False, indent=2)
+
+    def _asset_path(self, asset_id: str) -> Path:
+        return self.storage_dir / f"{asset_id}.json"
+
+    def _write(self, asset: AssetProfile) -> None:
+        import dataclasses
+        with open(self._asset_path(asset.asset_id), 'w', encoding='utf-8') as f:
+            json.dump(dataclasses.asdict(asset), f, ensure_ascii=False, indent=2)
+
+    def _update_index_entry(self, asset: AssetProfile) -> None:
+        entries = [e for e in self._index["assets"] if e["asset_id"] != asset.asset_id]
+        entries.append({
+            "asset_id": asset.asset_id,
+            "asset_name": asset.asset_name,
+            "business_unit": asset.business_unit,
+            "asset_class": asset.asset_class,
+            "status": asset.status,
+        })
+        self._index["assets"] = entries
+        self._save_index()
+
+    def create(self, asset: AssetProfile) -> None:
+        """Falla si asset_id ya existe — sin sobrescritura silenciosa."""
+        if self._asset_path(asset.asset_id).exists():
+            raise ValueError(
+                f"El activo '{asset.asset_id}' ya existe en el Registro — "
+                f"usa update() para modificarlo."
+            )
+        self._write(asset)
+        self._update_index_entry(asset)
+
+    def update(self, asset: AssetProfile) -> None:
+        """Falla si asset_id NO existe — simetría con create()."""
+        if not self._asset_path(asset.asset_id).exists():
+            raise ValueError(
+                f"El activo '{asset.asset_id}' no existe en el Registro — "
+                f"usa create() para darlo de alta."
+            )
+        self._write(asset)
+        self._update_index_entry(asset)
+
+    def get(self, asset_id: str) -> Optional[AssetProfile]:
+        path = self._asset_path(asset_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return AssetProfile(**data)
+
+    def list(self, business_unit: str = None, asset_class: str = None,
+             include_retired: bool = False) -> List[AssetProfile]:
+        result = []
+        for entry in self._index["assets"]:
+            if not include_retired and entry["status"] == "retirado":
+                continue
+            if business_unit and entry["business_unit"] != business_unit:
+                continue
+            if asset_class and entry["asset_class"] != asset_class:
+                continue
+            asset = self.get(entry["asset_id"])
+            if asset is not None:
+                result.append(asset)
+        return result
+
+    def search(self, query: str) -> List[AssetProfile]:
+        """Substring simple en asset_id o asset_name, insensible a mayúsculas.
+
+        A diferencia de list(), SÍ incluye activos retirados — una búsqueda
+        de auditoría no debería ocultar un activo solo porque fue retirado."""
+        q = query.lower()
+        return [
+            a for a in self.list(include_retired=True)
+            if q in a.asset_id.lower() or q in a.asset_name.lower()
+        ]
+
+    def retire(self, asset_id: str) -> None:
+        """status = 'retirado'. NO borra el archivo."""
+        asset = self.get(asset_id)
+        if asset is None:
+            raise ValueError(f"El activo '{asset_id}' no existe en el Registro.")
+        asset.status = "retirado"
+        self.update(asset)
+
+    def import_csv(self, file_obj) -> Tuple[List[AssetProfile], List[dict]]:
+        """(importados, errores_por_fila). Cada fila con asset_id ya
+        existente (en el Registro o repetido dentro del mismo archivo) es un
+        error reportado, no una sobrescritura — misma regla que create().
+
+        Reutiliza el mismo normalizador de encabezados (_norm) que usa
+        PortfolioLoader, con su propia tabla de sinónimos — no reutiliza
+        _map_columns porque esa está fija a la tabla de alias de proyectos,
+        no de activos (mismo patrón que ActualsLoader._map_cols)."""
+        import csv as _csv
+        reader = _csv.DictReader(file_obj)
+        col_map = _map_asset_columns(reader.fieldnames or [])
+
+        importados: List[AssetProfile] = []
+        errores: List[dict] = []
+        seen_in_file: set = set()
+
+        for i, row in enumerate(reader, start=2):  # fila 1 = encabezado
+            def g(field):
+                col = col_map.get(field)
+                return row.get(col, "").strip() if col else ""
+
+            asset_id = g("asset_id")
+            if not asset_id:
+                errores.append({"fila": i, "motivo": "asset_id vacío o no mapeado"})
+                continue
+            if asset_id in seen_in_file or self._asset_path(asset_id).exists():
+                errores.append({"fila": i, "asset_id": asset_id,
+                               "motivo": "asset_id duplicado — usar update() o corregir el archivo"})
+                continue
+            try:
+                asset = AssetProfile(
+                    asset_id=asset_id,
+                    asset_name=g("asset_name") or asset_id,
+                    asset_class=g("asset_class"),
+                    business_unit=g("business_unit"),
+                    install_year=int(g("install_year") or 2000),
+                )
+            except (ValueError, TypeError) as e:
+                errores.append({"fila": i, "asset_id": asset_id, "motivo": str(e)})
+                continue
+            self.create(asset)
+            seen_in_file.add(asset_id)
+            importados.append(asset)
+
+        return importados, errores
+
+
+_COL_ALIASES_ASSET = {
+    "asset_id":       ["asset_id", "id_activo", "id"],
+    "asset_name":     ["asset_name", "nombre_activo", "nombre"],
+    "asset_class":    ["asset_class", "clase_activo", "familia", "tipo_activo"],
+    "business_unit":  ["business_unit", "unidad_negocio", "bu", "negocio"],
+    "install_year":   ["install_year", "anio_instalacion", "año_instalacion"],
+}
+
+
+def _map_asset_columns(columns: List[str]) -> Dict[str, str]:
+    """Mismo patrón que PortfolioLoader._map_columns, tabla de alias propia
+    de activos (ver docstring de AssetRegistryStore.import_csv)."""
+    norm_cols = {_norm(c): c for c in columns}
+    mapping: Dict[str, str] = {}
+    for field_name, aliases in _COL_ALIASES_ASSET.items():
+        for alias in aliases:
+            if _norm(alias) in norm_cols:
+                mapping[field_name] = norm_cols[_norm(alias)]
+                break
+    return mapping
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BLOQUE 11 — PORTFOLIO LOADER (Excel / CSV → ProjectInput[])
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -10665,12 +10983,19 @@ class PortfolioLoader:
                 business_unit=bu, investment_type=inv_type,
                 costs=costs,
                 execution_year=exec_yr, optimal_year=opt_yr,
-                drivers=drivers, risk=risk,
+                drivers=drivers, risk_components=[risk] if risk else [],
                 is_mandatory=is_mand,
                 is_committed=is_committed_flag,
                 committed_year=committed_yr,
                 construction_years=cy,
             )
+            # D-14: resuelto UNA vez al importar, con el mismo método que antes
+            # se llamaba en cada evaluate() — preserva exactamente el horizonte
+            # que este proyecto habría tenido antes de esta migración (este
+            # importador nunca declara asset_type, así que hoy cae en el
+            # _default de la BU o en el fallback global; get_horizon_for_asset
+            # no se elimina — sigue existiendo para la Vista de Flota).
+            proj.analysis_horizon_years = self._engine.get_horizon_for_asset(proj)
             proj.precedent_project_id = prec_id
             proj.min_lag_years = min_lag
             proj.mutual_exclusion_ids = mutex_list
