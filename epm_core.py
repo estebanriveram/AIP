@@ -2119,7 +2119,19 @@ class ProjectInput:
     execution_year: int = 2026
     optimal_year: int = 2026
     drivers: list = field(default_factory=list)
-    risk: Optional[RiskInput] = None
+    risk_components: List[RiskInput] = field(default_factory=list)
+    """Cero, uno o varios componentes de inacción — cada uno con su propia
+    clasificación (matriz genérica / curva física / costo directo), calculados
+    de forma independiente y sumados (ver ValueEngine._evaluate_inner).
+    Reemplaza el campo 'risk' — reemplazo limpio, sin campo paralelo de
+    compatibilidad (decisión explícita del usuario, ver spec §9)."""
+
+    analysis_horizon_years: int = 0
+    """Horizonte único del proyecto, declarado por el analista — alimenta
+    beneficios, CADA componente de risk_components, EAV, VEI y Costo de
+    Posponer. 0 = no declarado; evaluate() debe fallar explícitamente en ese
+    caso (ver Task 5, not yet executed), sin fallback silencioso a ningún
+    horizonte por defecto."""
     dependencies: list = field(default_factory=list)
     """IDs de proyectos que deben estar seleccionados ANTES que este (restricción
     simple: el padre debe estar en el portafolio, sin lag temporal mínimo).
