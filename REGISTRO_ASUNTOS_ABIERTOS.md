@@ -1010,6 +1010,99 @@ exactamente 2 opciones. Suite: 272/272 en verde, sin cambios de conteo
 
 ---
 
+### D-14 · Componentes múltiples de inacción, Registro de Activos, horizonte único por proyecto
+
+Origen: preguntas de AyA durante el taller de calibración, mientras se
+preparaba el informe de trazabilidad de riesgo — *"¿no está la opción
+mixta?"* y *"¿no podían existir varios activos degradándose [en un mismo
+proyecto]?"*. Verificado contra el código antes de diseñar nada: ninguna
+de las dos existía. Un proyecto solo podía declarar un componente de
+riesgo (`ProjectInput.risk: Optional[RiskInput]`), y el horizonte de
+evaluación salía de una tabla por tipo de activo, no de una decisión
+explícita del analista para ese proyecto puntual.
+
+**Motor (`epm_core.py`):**
+
+- `ProjectInput.risk: Optional[RiskInput]` se reemplaza por
+  `risk_components: List[RiskInput]` (agregación por suma) — **reemplazo
+  limpio, sin campo paralelo de compatibilidad**, decisión explícita
+  documentada en el §9 del spec de diseño: mantener los dos campos en
+  paralelo se descartó por ser el mismo patrón de duplicación que ya
+  produjo errores reales en este proyecto (`config.json` vs.
+  `DEFAULT_CONFIG`, ver D-9/D-11/D-12).
+- `analysis_horizon_years: int`, declarado por el analista y sin valor
+  por defecto, reemplaza la búsqueda de horizonte por tipo de activo en
+  toda la ruta central de evaluación: `_evaluate_inner` (beneficios,
+  riesgo, EAV, VEI), `evaluate_marginal`, `_calc_timing` (Costo de
+  Posponer) y `_optimal_timing_inner` (año óptimo). `get_horizon_for_asset()`
+  y `asset_horizons_by_bu` **no se eliminaron** — siguen en uso, ahora
+  solo para la Vista de Flota (pestaña de Auditoría), su único consumidor
+  restante.
+- `RiskInput` gana los campos `label`, `asset_type` y `source_asset_id`
+  — identidad y trazabilidad por componente.
+- `AssetProfile` gana el campo `status` (`"activo"`/`"retirado"`, borrado
+  suave).
+- Clase nueva `AssetRegistryStore` (núcleo mínimo del Registro de
+  Activos): `create`/`update`/`get`/`list`/`search`/`retire`/
+  `import_csv`/`import_excel`/`import_bytes`, sobre el mismo patrón de
+  persistencia de `SnapshotStore` (un archivo por registro + `_index.json`).
+
+**Correcciones de paso, encontradas durante la migración** (se dejan
+enlazadas aquí para no perderles el rastro):
+
+- Bug preexistente, siempre roto: `SensitivityAnalyst._apply_proj_overrides`
+  escalaba `risk_multiplier` contra un campo de `RiskInput`,
+  `consequence_level`, que nunca existió. Corregido para escalar
+  `baseline_consequence_level` de cada componente.
+- Las restricciones R8 (Debe-Mitigar) y R6 (riesgo acumulado máximo) del
+  `PortfolioOptimizer` (MILP) se migraron para agregar sobre múltiples
+  componentes: R8 con semántica de peor-componente (el máximo baseline
+  dispara la restricción; TODOS los componentes deben superar la
+  tolerancia del lado residual); R6 suma un proxy tipo EAL a través de
+  los componentes.
+
+**Asistente / UI (`app_epm_aip_full_enterprise.py`):**
+
+- El Paso 1 gana un campo obligatorio "Horizonte de análisis" (sin
+  sugerencia prellenada) y vuelve "Familia de Activo" condicional a
+  `Tipo de Inversión == "Reposición de Activos"`.
+- Página/pestaña administrativa nueva "Registro de Activos" (buscar/
+  listar con filtros, alta manual, importación masiva CSV/Excel).
+- El flujo de "No Hacer Nada" (FASE A) del asistente ahora admite guardar
+  MÚLTIPLES "Componentes de Inacción" (uno a la vez, vía "+ Guardar y
+  agregar otro componente"), cada uno con la misma captura rica que ya
+  existía (modelado Weibull consciente del activo, matriz de consecuencia
+  Copperleaf de 5 tipos). Esto también corrigió lo que se había vuelto un
+  bug de caída en vivo (`ProjectInput` dejó de aceptar el kwarg `risk=`
+  tras la migración del motor).
+- La FASE B (definición de alternativa) ahora exige una declaración
+  residual EXPLÍCITA para CADA componente guardado, en cada alternativa —
+  sin autocompletado ni valor por defecto; la acción "Agregar Alternativa"
+  queda bloqueada hasta que todos los residuales estén declarados.
+- La visualización de resultados gana una tabla de desglose de ΔR por
+  componente (solo se muestra cuando una alternativa tiene 2 o más
+  componentes).
+- **Limitación conocida y advertida, no corregida aquí** (queda como
+  seguimiento aparte): la metodología `asset_aware` (Weibull) todavía no
+  agrega correctamente los parámetros Weibull a través de 2+ componentes
+  — solo los parámetros físicos (β/η/edad) del ÚLTIMO componente
+  ingresado gobiernan el cálculo real de EAL/VNT para esa combinación
+  específica. Se agregó un banner de advertencia visible en FASE A y FASE
+  B para que un analista que use esa combinación exacta (asset_aware + 2
+  o más componentes) no quede engañado en silencio, pero el cálculo de
+  fondo sigue necesitando un arreglo propio de Weibull multi-componente.
+  **No afecta** a la metodología `driver_based`/`concept_rating`, que ya
+  suma riesgo correctamente para cualquier número de componentes, ni a
+  las evaluaciones `asset_aware` de un solo componente (el caso
+  ampliamente mayoritario), que quedan intactas.
+
+**Referencia:** diseño completo en
+`docs/superpowers/specs/2026-09-04-componentes-multiples-inaccion-registro-activos-design.md`
+y plan de ejecución en
+`docs/superpowers/plans/2026-09-04-componentes-multiples-inaccion-registro-activos.md`.
+
+---
+
 ## Trazabilidad
 
 | Asunto | Verificable en | Estado |
@@ -1062,6 +1155,12 @@ exactamente 2 opciones. Suite: 272/272 en verde, sin cambios de conteo
 | D-13 VD-4 (Reto 4 completo) reubicado en Crecimiento/Expansión como `suggested_sc` — sin eso quedaba huérfano | `epm_core.py → INVESTMENT_TYPES["Crecimiento / Expansión"]` | **Cerrado** |
 | D-13 VD-2-B/VD-2-C quedan huérfanos de todo tipo de inversión — decisión explícita de no reubicarlos | `epm_core.py → INVESTMENT_TYPES` | Documentado, decisión consciente del usuario |
 | D-13 `_INV_TYPE_MAP` con sinónimos que nunca coincidían con las claves reales (bug preexistente, sin relación con este retiro) | `epm_core.py → _INV_TYPE_MAP` | **Cerrado** |
+| D-14 `ProjectInput.risk` reemplazado por `risk_components: List[RiskInput]` (más `label`/`asset_type`/`source_asset_id` en `RiskInput`, `status` en `AssetProfile`) | `epm_core.py → ProjectInput`, spec §9 | **Cerrado — reemplazo limpio, sin compatibilidad hacia atrás** |
+| D-14 Horizonte único por proyecto (`analysis_horizon_years`) reemplaza la búsqueda por tipo de activo en la ruta central de evaluación | `_evaluate_inner`, `evaluate_marginal`, `_calc_timing`, `_optimal_timing_inner` | **Cerrado** · `get_horizon_for_asset()`/`asset_horizons_by_bu` siguen vivos solo para Vista de Flota |
+| D-14 `AssetRegistryStore` (núcleo del Registro de Activos) + página administrativa | `epm_core.py → AssetRegistryStore`, pestaña "Registro de Activos" | **Cerrado** |
+| D-14 Asistente: horizonte obligatorio en Paso 1, múltiples Componentes de Inacción en FASE A, residual explícito por componente en FASE B, desglose de ΔR por componente | `app_epm_aip_full_enterprise.py` | **Cerrado** |
+| D-14 Bug preexistente de `SensitivityAnalyst._apply_proj_overrides` (`risk_multiplier` referenciaba un campo inexistente) y migración de R6/R8 del MILP a múltiples componentes | `SensitivityAnalyst._apply_proj_overrides`, `PortfolioOptimizer` R6/R8 | **Cerrado** |
+| D-14 `asset_aware` (Weibull) no agrega parámetros físicos entre 2+ componentes — solo el último ingresado gobierna el cálculo real | Banner de advertencia en FASE A/B del asistente | **Abierto — no afecta `driver_based` ni asset_aware de un solo componente** |
 
 ---
 
