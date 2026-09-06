@@ -5405,6 +5405,34 @@ class S36_WeibullMultiComponente(unittest.TestCase):
             msg="Un componente con residual == baseline debe aportar ΔR=0 al motor "
                 "— su beneficio debe fluir SOLO por el driver EAL-evitada")
 
+    # ── 5. Helper extraído de Bloque 2b (D-14, hallazgo de code review) ────
+
+    def test_helper_extra_neutraliza_residual_si_es_weibull_asset_aware(self):
+        """_build_extra_component_risk_input debe neutralizar el residual
+        matricial (== baseline) para un componente con curva Weibull en modo
+        asset_aware — su beneficio financiero fluye solo por el driver
+        EAL-evitada, nunca por el motor (D-14, hallazgo de code review)."""
+        app = self._app()
+        base = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0, cr=2, pr=2)
+        r = app._build_extra_component_risk_input(
+            base, "asset_aware",
+            residual_cons_declared=1, residual_prob_declared=1)
+        self.assertEqual(r.residual_consequence_level, r.baseline_consequence_level)
+        self.assertEqual(r.residual_probability_level, r.baseline_probability_level)
+
+    def test_helper_extra_respeta_residual_declarado_si_no_es_asset_aware(self):
+        """Para un componente sin curva Weibull (driver_based) o metodologia
+        distinta de asset_aware, el residual declarado por el analista pasa
+        sin modificar — no hay canal EAL-evitada paralelo que justifique
+        neutralizarlo."""
+        app = self._app()
+        base = RiskInput(baseline_consequence_level=4, baseline_probability_level=4)
+        r = app._build_extra_component_risk_input(
+            base, "driver_based",
+            residual_cons_declared=2, residual_prob_declared=2)
+        self.assertEqual(r.residual_consequence_level, 2)
+        self.assertEqual(r.residual_probability_level, 2)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
