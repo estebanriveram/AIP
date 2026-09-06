@@ -2045,6 +2045,13 @@ class RiskInput:
     weibull_beta: float = 0.0        # Parámetro de forma β (0 = desactivado / usar exponencial)
     weibull_eta: float  = 0.0        # Vida característica η en años (e.g. 40 para transformadores)
     asset_age_years: float = 0.0     # Edad actual del activo en años (desde instalación/última renovación)
+    weibull_cof_COP: float = 0.0
+    """Consecuencia de falla (COP) de este componente en su modelo Weibull, tal
+    como la capturó el asistente asset_aware. El motor NO la lee — su ΔR sigue
+    derivando el CoF de la matriz de consecuencia por nivel. Sólo la usa el
+    asistente (FASE B) para sumar la EAL evitada de cada componente sin
+    re-cuantizar el valor exacto a un nivel 1-5 y de vuelta. Default 0.0 = no
+    capturada (componentes driver_based / modo directo)."""
 
     # ── Modo directo: el costo anual ya viene monetizado ──────────────────────
     # Existe para las inversiones donde la inacción NO es la falla de un activo.

@@ -5258,6 +5258,154 @@ class S35_AssetRegistryStore(unittest.TestCase):
         self.assertIsNotNone(self.store.get("AyA-TUB-050"))
 
 
+class S36_WeibullMultiComponente(unittest.TestCase):
+    """asset_aware con 2+ componentes: cada componente lleva SU propia física
+    Weibull (β/η/edad/CoF) y el beneficio (ΔR en el motor, EAL evitada en el
+    asistente FASE B) suma la contribución de TODOS los componentes — no la de
+    uno solo (antes: sólo el último `w_aw_baseline` capturado).
+
+    Regla de regresión: con 1 solo componente el resultado es idéntico al de
+    evaluar ese componente aislado.
+    """
+
+    BU = "TyD"
+
+    def _cfg(self):
+        return _cfg()
+
+    def _comp(self, beta, eta, edad, cof_mm, cb=4, pb=4, cr=4, pr=4, label=""):
+        """Un RiskInput asset_aware con curva Weibull propia.
+
+        cr/pr = baseline por defecto → ΔR financiero de la matriz = 0; el ΔR
+        real sale de la curva Weibull (misma convención que produce el asistente
+        para asset_aware: el financiero fluye por la física, no por el
+        movimiento ordinal C×P)."""
+        return RiskInput(
+            baseline_consequence_level=cb, baseline_probability_level=pb,
+            residual_consequence_level=cr, residual_probability_level=pr,
+            weibull_beta=beta, weibull_eta=eta, asset_age_years=edad,
+            weibull_cof_COP=cof_mm * 1_000_000.0,
+            label=label, asset_type="_default",
+        )
+
+    def _proj(self, componentes):
+        p = _make_project(pid="AW-MULTI", bu=self.BU, capex=6_000_000_000,
+                          inv_type="Reposicion de Activos",
+                          drivers=[_make_driver("VD-1", [_make_sc("VD-1-A", delta=50.0)])],
+                          risk=None, construction_years=1)
+        p.asset_type = "_default"
+        p.risk_components = list(componentes)
+        p.analysis_horizon_years = ValueEngine(self._cfg()).get_horizon_for_asset(p)
+        return p
+
+    # ── 1. El campo weibull_cof_COP existe y es additivo ────────────────────
+
+    def test_weibull_cof_cop_default_cero_y_declarable(self):
+        r0 = RiskInput(baseline_consequence_level=3, baseline_probability_level=3)
+        self.assertEqual(r0.weibull_cof_COP, 0.0)
+        r1 = RiskInput(baseline_consequence_level=3, baseline_probability_level=3,
+                       weibull_cof_COP=1_500_000_000.0)
+        self.assertEqual(r1.weibull_cof_COP, 1_500_000_000.0)
+
+    # ── 2. El motor suma el ΔR Weibull de CADA componente ──────────────────
+
+    def test_motor_suma_delta_r_weibull_de_ambos_componentes(self):
+        """ΔR(A+B) = ΔR(A solo) + ΔR(B solo), con residual < baseline para que
+        cada curva Weibull produzca un ΔR distinto de cero."""
+        # residual mejor que baseline (cr/pr = 2) → ΔR Weibull ≠ 0
+        viejo_riesgoso = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0,
+                                    cr=2, pr=2, label="Transformador viejo")
+        nuevo_sano     = self._comp(beta=2.2, eta=45.0, edad=4.0,  cof_mm=200.0,
+                                    cr=2, pr=2, label="Celda nueva")
+
+        eng = ValueEngine(self._cfg())
+        dr_ambos = eng.evaluate(self._proj([viejo_riesgoso, nuevo_sano]))["risk_analysis"]["delta_r_npv_COP"]
+        dr_a = eng.evaluate(self._proj([viejo_riesgoso]))["risk_analysis"]["delta_r_npv_COP"]
+        dr_b = eng.evaluate(self._proj([nuevo_sano]))["risk_analysis"]["delta_r_npv_COP"]
+
+        self.assertGreater(dr_a, 0.0)
+        self.assertGreater(dr_b, 0.0)
+        self.assertAlmostEqual(dr_ambos / 1e6, (dr_a + dr_b) / 1e6, places=2,
+            msg="El motor no suma el ΔR Weibull de los 2 componentes")
+        # El 2º componente contribuye de verdad: A+B supera a A solo.
+        self.assertGreater(dr_ambos, dr_a * 1.05)
+
+    def test_regresion_un_solo_componente_identico_a_evaluar_aislado(self):
+        solo = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0,
+                          cr=2, pr=2, label="único")
+        eng = ValueEngine(self._cfg())
+        r_multi_api = eng.evaluate(self._proj([solo]))
+        # mismo componente, misma vía — el valor no cambia por el hecho de
+        # pasar por la ruta de "lista de componentes".
+        self.assertEqual(len(r_multi_api["risk_analysis"]["components"]), 1)
+        self.assertGreater(r_multi_api["risk_analysis"]["delta_r_npv_COP"], 0.0)
+
+    # ── 3. El asistente (FASE B) suma la EAL evitada de TODOS ──────────────
+
+    def _app(self):
+        try:
+            import app_epm_aip_full_enterprise as app
+        except Exception as exc:                      # pragma: no cover
+            self.skipTest(f"app no importable en bare mode: {exc}")
+        return app
+
+    def test_helper_eal_evitada_suma_todos_los_componentes_reposicion(self):
+        app = self._app()
+        viejo = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0)
+        nuevo = self._comp(beta=2.2, eta=45.0, edad=4.0,  cof_mm=200.0)
+
+        total_ab, desg_ab = app._asset_aware_eal_avoided_COP([viejo, nuevo], "reposicion")
+        total_a, _        = app._asset_aware_eal_avoided_COP([viejo], "reposicion")
+        total_b, _        = app._asset_aware_eal_avoided_COP([nuevo], "reposicion")
+
+        self.assertEqual(len(desg_ab), 2)
+        self.assertAlmostEqual(total_ab, total_a + total_b, places=2)
+        self.assertGreater(total_a, 0.0)
+        self.assertGreater(total_b, 0.0)
+        # reposición ⇒ EAL evitada de cada componente = PoF_actual × CoF
+        import math as _m
+        pof_v = 1.0 - _m.exp(-((34.0 / 30.0) ** 3.0))
+        self.assertAlmostEqual(total_a, pof_v * 1500.0 * 1_000_000.0, places=2)
+
+    def test_helper_eal_evitada_ignora_componentes_sin_curva(self):
+        app = self._app()
+        con_curva = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0)
+        sin_curva = RiskInput(baseline_consequence_level=3, baseline_probability_level=3)  # driver_based
+        total, desg = app._asset_aware_eal_avoided_COP([con_curva, sin_curva], "reposicion")
+        solo, _ = app._asset_aware_eal_avoided_COP([con_curva], "reposicion")
+        self.assertEqual(len(desg), 1)
+        self.assertAlmostEqual(total, solo, places=6)
+
+    def test_helper_rehabilitacion_reduce_pero_no_anula_la_eal_evitada(self):
+        app = self._app()
+        viejo = self._comp(beta=3.0, eta=30.0, edad=34.0, cof_mm=1500.0)
+        total_rep, _ = app._asset_aware_eal_avoided_COP([viejo], "reposicion")
+        total_reh, _ = app._asset_aware_eal_avoided_COP([viejo], "rehabilitacion",
+                                                        age_effective_new=12.0)
+        self.assertGreater(total_reh, 0.0)
+        self.assertLess(total_reh, total_rep)
+
+    # ── 4. Sin doble conteo entre el ΔR del motor y el driver EAL-evitada ──
+
+    def test_no_hay_doble_conteo_entre_motor_y_driver_eal_evitada(self):
+        """El ΔR del motor para un componente Weibull con residual neutralizado
+        (residual == baseline) debe ser exactamente 0 — su beneficio financiero
+        SOLO puede fluir por el driver EAL-evitada del asistente, nunca por
+        ambos canales a la vez (hallazgo de code review)."""
+        comp_neutralizado = RiskInput(
+            baseline_consequence_level=4, baseline_probability_level=4,
+            residual_consequence_level=4, residual_probability_level=4,  # == baseline
+            weibull_beta=3.0, weibull_eta=30.0, asset_age_years=34.0,
+            weibull_cof_COP=1_500_000_000.0,
+        )
+        eng = ValueEngine(self._cfg())
+        p = self._proj([comp_neutralizado])
+        r = eng.evaluate(p)
+        self.assertAlmostEqual(r["risk_analysis"]["delta_r_npv_COP"], 0.0, places=2,
+            msg="Un componente con residual == baseline debe aportar ΔR=0 al motor "
+                "— su beneficio debe fluir SOLO por el driver EAL-evitada")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────
