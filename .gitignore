@@ -12,6 +12,8 @@
 !REGISTRO_ASUNTOS_ABIERTOS.md
 !.gitignore
 !docs/**
+!app_epm_aip_full_enterprise.py
+!simulaciones_epm_aip.py
 
 # Worktrees de trabajo (superpowers:using-git-worktrees) — nunca versionados,
 # incluso si algún archivo dentro coincide por nombre con un patrón
