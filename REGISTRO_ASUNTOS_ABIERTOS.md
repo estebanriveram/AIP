@@ -1164,6 +1164,364 @@ y plan de ejecución en
 
 ---
 
+### D-15 · Ancla del nivel 5 de Salud y Seguridad (AyA) citaba el VSL bruto, no el neto — no reconciliaba con el valor calibrado
+
+Encontrado al preparar la guía de validación de AyA (2026-09-06): el
+criterio de asignación del nivel 5 ("Epidemia regional") describía
+"10+ muertes × VSL 4.500M = 45.000M + ..." pero el valor calibrado del
+nivel es 40.000M — el propio componente de mortalidad, tal como estaba
+descrito, ya superaba el total antes de sumar nada más.
+
+**Root cause, verificado antes de tocar nada:** el nivel 4 del mismo
+desglose ("Brote significativo") sí reconcilia — "3 muertes × VSL 2.500M
+**neto** = 7.500M + atención masiva = 8.000M" — usando el Valor
+Estadístico de la Vida **neto EPM post-ARL** (2.500M), no el bruto DNP
+Colombia 2024 (4.500M) que la descripción general del tipo cita como
+referencia de mercado. El ancla del nivel 5 usó por error la cifra bruta
+(4.500M) en vez de la neta que el propio nivel 4 ya establecía como la
+convención vigente para AyA — no fue una discrepancia sobre el monto
+calibrado en sí.
+
+**Corrección:** se reescribió el ancla del nivel 5 en `DEFAULT_CONFIG`
+(`epm_core.py`, `consequence_types_matrix.hs.levels_by_bu.AyA["5"]`) para
+usar la misma convención VSL-neto del nivel 4: "10 muertes × VSL 2.500M
+neto = 25.000M + miles de enfermos + demandas masivas + emergencia
+estatal + intervención MINSALUD = 40.000M" — reconcilia exactamente con
+el `value_COP` ya calibrado (40.000M), que no se modificó. Es una
+corrección de texto del criterio, no una recalibración de monto. Ningún
+código ni prueba dependía del texto del ancla (`consequence_types_matrix`
+no vive en `config.json`, solo en `DEFAULT_CONFIG`, y ninguna prueba fija
+su redacción) — verificado con `grep` antes de editar. Suite completa:
+307/307 en verde, sin cambios de conteo.
+
+---
+
+### D-16 · Dos tablas Weibull desconectadas — 5 tipos de activo T&D con curva citada eran inalcanzables para el motor de riesgo
+
+Encontrado al cuestionar el usuario, con razón, la certeza que se le dio
+sobre la tasa de crecimiento del riesgo de T&D (15%/año, `risk_growth_rate_by_bu`):
+esa tasa es el *fallback exponencial* que usa el motor cuando un activo NO
+tiene curva de Weibull calibrada — así que antes de aceptar o cuestionar el
+15% en sí, había que verificar cuántos activos de T&D realmente dependen de
+ese fallback, y por qué.
+
+**Root cause, verificado antes de tocar nada:** existen DOS tablas de
+parámetros Weibull en `config.json`, desconectadas entre sí:
+
+- `optimal_timing.weibull_params_by_asset` — la que consulta
+  `ValueEngine._get_weibull_params_for_asset()` (motor de riesgo/timing,
+  el que alimenta ΔR y el VNT). 5 entradas de T&D, con fuentes dispares
+  (`"IEEE C37 — desgaste mecánico"`, sin tabla ni cita puntual; dos
+  entradas incluso marcadas `"calibrar con historial EPM"` como
+  placeholder).
+- `degradation_engine.weibull_beta_by_class` — la que consulta
+  `AssetDegradationEngine` (Módulo B, EEOL). 6 entradas de T&D, con
+  fuentes citables y verificables: CIGRE/Martin & Tenbohlen (2026,
+  *Energies* 19(13):3197, Tabla 3, 26.533 transformadores), IEEE Std
+  493-2007 (Gold Book) Tabla 3-13, IEC 62271-200:2021, CIGRÉ TB 379
+  (2009), IEC 61511-1:2016, EPRI 3002000829 (2013).
+
+El selector "Tipo de activo" del asistente (`app_epm_aip_full_enterprise.py`,
+construcción de `_at_keys`) llena sus opciones desde
+`asset_horizons_by_bu[BU]`, que usa la convención de nombres de la SEGUNDA
+tabla (`interruptor_potencia`, `celda_MT`, `cable_energia`,
+`sistema_control_SCADA`, `medidor_AMI`), no la de la primera
+(`interruptor`, `cable_mt`, `cable_at`). Verificado con una llamada directa
+al motor: antes de este fix, esos 5 tipos eran seleccionables en el
+asistente pero `_get_weibull_params_for_asset()` devolvía `None` para
+los 5 — cualquier proyecto de T&D con uno de esos `asset_type` caía en
+silencio al exponencial plano (`risk_growth_rate_by_bu.TyD` = 15%/año, sin
+fuente verificable — ver cuestionamiento del usuario que originó este
+hallazgo) en vez de usar la curva calibrada y citada que ya existía en el
+propio `config.json`. Solo `transformador_potencia` funcionaba, por
+coincidencia de nombre entre las dos tablas (mismos valores en ambas, sin
+conflicto).
+
+**Corrección:** `_get_weibull_params_for_asset()` ahora consulta también
+`degradation_engine.weibull_beta_by_class` cuando la clave no está en
+`optimal_timing.weibull_params_by_asset` (que conserva prioridad — ninguna
+clave existente cambió de valor). Verificado con `git stash`-equivalente
+(reimplementación de la función vieja en una llamada aparte) que la
+llamada `_get_weibull_params_for_asset("interruptor_potencia")` en efecto
+devolvía `None` antes del fix, para confirmar que la prueba nueva
+detectaría una regresión real, no una aserción vacía.
+
+Se agregó el grupo **S37** (5 pruebas): los 5 tipos antes inalcanzables
+ahora resuelven con el beta/eta exactos de su fuente citada; las 4 claves
+que ya funcionaban (`transformador_potencia`, `reconectador`, `cable_mt`,
+`cable_at`) no cambiaron de valor; los tipos T&D genuinamente sin curva en
+ninguna tabla (`linea_transmision`, `subestacion_civil`) siguen devolviendo
+`None`, no una curva inventada; y las entradas de metadato de
+`weibull_beta_by_class` (`_nota`, `_revision`, separadores de sección) no
+rompen el lookup. Suite completa: 312/312 en verde (307 → 312, +5).
+
+**Lo que sigue abierto:** de los ~25 tipos de activo de T&D en
+`asset_horizons_by_bu`, quedan ~14 sin curva Weibull en ninguna tabla
+(`linea_transmision`, `subestacion_civil`, `transformador_distribucion`,
+`banco_condensadores`, `transformador_medida`, `interruptor_at`,
+`interruptor_mt`, `seccionador`, `cable_bt`, `linea_distribucion`,
+`rele_proteccion`, `sistema_scada`, `medidor_inteligente`, `reactancia`) —
+esos siguen dependiendo del 15%/año exponencial. Y ese 15% en sí sigue sin
+una fuente verificable: la nota que lo describe como "calibrado con SIGEAS
+EPM + benchmarks IEEE Std 493" no tiene, en todo el repositorio, ningún
+dataset, cálculo o documento que la sustente — es una afirmación que se
+cita a sí misma. El propio registro ya lo señalaba antes de este hallazgo
+(ver **A-2**: un 15% compuesto multiplica el riesgo por 16× en 20 años, y
+"es probable que se haya calibrado pensando en un crecimiento aproximado a
+corto plazo, no en una tasa sostenida"). Pendiente decidir con el negocio
+T&D qué número (o qué mecanismo — quizás no debería ser exponencial sin
+cota) es defendible para los ~14 tipos que aún no tienen curva propia.
+
+---
+
+### D-17 · Una cuarta tabla desconectada — `risk_growth_rate_by_asset` usaba nombres que `RiskInput.asset_type` nunca produce
+
+Continuación directa de D-16, investigando la pregunta que D-16 dejó
+abierta: ¿de dónde sale realmente `asset_type` en un `RiskInput` de
+producción? El asistente (`app_epm_aip_full_enterprise.py`) resultó ser la
+única fuente — y no usa ninguna de las dos tablas de D-16.
+
+**Root cause, verificado antes de tocar nada:** existe una TERCERA fuente
+de parámetros Weibull, `ASSET_FAMILIES` (`epm_core.py:1818`), indexada por
+`asset_family` — un vocabulario más grueso (9 familias en total, 3 para
+T&D) que agrupa varios tipos granulares de `asset_horizons_by_bu` bajo un
+mismo nombre (`interruptor_seccionador` cubre interruptores Y
+seccionadores; `cable_subterraneo` cubre todos los cables MT/AT). Se
+verificó con `grep` exhaustivo en los tres archivos de producción
+(`epm_core.py`, `app_epm_aip_full_enterprise.py`, `simulaciones_epm_aip.py`)
+que `_get_weibull_params_for_asset()` (la función que arregló D-16) **no
+se llama en ningún lugar** — las dos únicas referencias son su propio
+docstring. Es código correcto y ahora probado, pero muerto.
+
+El emisor real: `w_asset_family` (session_state) se copia directamente a
+`RiskInput.asset_type` (`app_epm_aip_full_enterprise.py:5505`), y ese
+mismo valor alimenta los `number_input` de β/η en la UI
+(`ASSET_FAMILIES[familia]["weibull_defaults"]`) y
+`ValueEngine._get_risk_growth_rate()`. Verificado también que
+`ProjectWizard` (CLI) nunca asigna `asset_type` a un `RiskInput` — los
+proyectos creados por CLI siempre caen al nivel 2 de la jerarquía (tasa
+por negocio), nunca al nivel 1.
+
+`risk_growth_rate_by_asset` (el override "más específico", nivel 1 de la
+jerarquía de `_get_risk_growth_rate`) tenía 7 claves con la nomenclatura
+granular vieja (`interruptor`, `cable_mt`, `bomba_centrifuga`,
+`valvula_control`, `scada_sistema`, más `transformador_potencia` y
+`tuberia_conduccion` que sí coincidían). Cruzada contra las 9 familias
+reales de `ASSET_FAMILIES`, 4 de esas 7 claves nunca eran alcanzables por
+ningún `asset_type` real; `scada_sistema` tampoco lo era porque
+`ASSET_FAMILIES` no tiene ninguna familia SCADA; y dos familias reales
+(`compresor`, `turbina_grupo_hidraulico`) no tenían ninguna entrada.
+
+**Hallazgo adicional, no solo de nombres:** al comparar el β que cada
+comentario de `risk_growth_rate_by_asset` dice haber usado para derivar su
+tasa contra el β real y citado que hoy tiene `ASSET_FAMILIES` para esa
+misma familia, **ninguna de las 6 coincide** — ni siquiera
+`transformador_potencia`, la única clave que ya coincidía por nombre
+(β asumido≈2,5 al derivar 0,12/año; β real citado hoy, CIGRE 2026: 1,31).
+Es decir: aunque se conecten los nombres, los NÚMEROS de esta tabla nunca
+fueron recalculados contra la curva que realmente está vigente — es el
+mismo patrón de "la etiqueta afirma algo que nadie verificó" de D-15,
+aplicado a seis valores en vez de uno.
+
+**Corrección aplicada, con alcance deliberadamente acotado:**
+`interruptor`→`interruptor_seccionador`, `cable_mt`→`cable_subterraneo`,
+`bomba_centrifuga`→`bomba_impulsion`, `valvula_control`→`valvula_regulador`
+— renombradas, mismo valor numérico que antes (NO recalibradas: sería
+repetir el error de D-15 dos veces, ahora con prisa). `scada_sistema` se
+retiró (clave permanentemente inalcanzable). `compresor` y
+`turbina_grupo_hidraulico` se dejaron sin entrada — no se inventó un
+número sin base para llenar el hueco; caen correctamente al nivel 2
+(tasa por negocio). Cada línea de la tabla quedó con un comentario que
+muestra el β asumido originalmente junto al β real citado hoy, para que
+la brecha sea visible en el propio código, no solo en este registro.
+
+Se agregó el grupo **S38** (6 pruebas, incluida una que primero verifica
+que el caso de prueba elegido realmente distingue el override específico
+de la tasa por negocio — la primera versión de esa prueba usaba T&D para
+`interruptor_seccionador`, donde ambos niveles dan 0,15 por coincidencia
+numérica, y habría pasado igual sin alcanzar el override). Verificado con
+una reimplementación de la función vieja en una llamada aparte que las 6
+pruebas fallarían contra el código pre-D-17. Suite completa: 318/318 en
+verde (312 → 318, +6).
+
+**Lo que sigue abierto:** el problema real — qué tasa (o qué mecanismo)
+usar para los ~14 tipos de activo de T&D que no tienen ninguna familia en
+`ASSET_FAMILIES` — sigue sin resolver, y ahora se le suma que ni siquiera
+los 4 activos con familia y tasa específica tienen esa tasa recalibrada
+contra su curva real. Pendiente decidir con el negocio.
+
+---
+
+### D-18 · Duplicados sin deprecar en `asset_horizons_by_bu` + conexión documental Grupo A→familias
+
+Al re-triar los ~16 tipos de activo T&D sin curva Weibull (continuación de
+D-16/D-17), aparecieron dos problemas distintos, ambos de la misma familia
+de causa raíz (nombres que divergieron entre `DEFAULT_CONFIG` y
+`config.json` sin reconciliarse):
+
+**1. Duplicados reales, no solo de nombre.** `sistema_scada`/`medidor_inteligente`
+(`DEFAULT_CONFIG`, `epm_core.py`) y `sistema_control_SCADA`/`medidor_AMI`
+(`config.json`, la fuente viva) describen el mismo activo físico —
+confirmado por el propio comentario de `medidor_inteligente`: `"AMI: vida
+regulatoria Res. CREG 038/2014"`. Como `load_config()` mezcla por clave, no
+por contenido, las dos versiones sobrevivían juntas en las 4 BU, y el
+selector "Tipo de activo" del asistente mostraba ambas como opciones
+separadas para el mismo equipo. Verificado con `grep` que config.json
+tiene el nombre nuevo en las 4 BU antes de retirar el viejo — sin negocio
+que dependiera del nombre legado como única fuente. Se retiraron las 6
+entradas legado de `DEFAULT_CONFIG` (TyD, Generación, AyA ×2, Gas).
+Ninguna prueba ni código de producción las referenciaba. Suite: 318/318
+(sin cambio de conteo, no hacía falta prueba nueva para una eliminación
+verificada por ausencia total de referencias).
+
+**2. Cuatro tipos granulares de T&D (interruptor_at, interruptor_mt,
+seccionador, cable_bt) son variantes de un equipo que SÍ tiene familia en
+`ASSET_FAMILIES`** (`interruptor_seccionador`, `cable_subterraneo`), pero
+sin ninguna conexión explícita: un analista que declara uno de estos como
+"Tipo de activo" (horizonte) no tiene ninguna señal de que debe elegir esa
+familia para la curva Weibull, y el valor por defecto de "Familia de
+activo" es `"otro"` (sin curva). Se agregó `granular_asset_types` a cada
+familia aplicable, listando los tipos granulares que cubre — incluye
+`reconectador`, cuyo β=2,8 en la tabla muerta de D-16 ya coincidía con el
+β=2,8 de `interruptor_seccionador`, reforzando que el mapeo no es
+arbitrario. **Es solo metadato — no cambia el comportamiento del
+asistente**, que sigue exigiendo que el analista elija la familia a mano;
+un cambio de UI que sugiera la familia automáticamente queda fuera de
+alcance de este hallazgo, sin poder verificarse en vivo dentro de esta
+sesión.
+
+Se agregó el grupo **S39** (4 pruebas): cada tipo granular listado existe
+de verdad en `asset_horizons_by_bu` de una BU aplicable (no es un nombre
+inventado); los 4 tipos del Grupo A están cubiertos; `cable_bt`
+específicamente está cubierto; y ningún tipo granular queda asignado a dos
+familias a la vez (ambigüedad). Suite completa: 322/322 en verde (318 → 322, +4).
+
+**Grupo C (subestación GIS/AIS/civil) — investigado y cerrado como "no es
+un hueco de dato, es un límite de diseño correcto".** Se verificó que
+NINGÚN activo agregado/civil de NINGUNA de las 4 BU tiene curva Weibull
+propia: ni `presa_concreto`/`presa_tierra`/`compuerta_hidraulica`
+(Generación), ni `tanque_concreto`/`tanque_metalico`/`planta_potabilizacion`/
+`planta_ptar`/`planta_tratamiento`/`filtro` (AyA) — con la única excepción
+de `tanque_almacenamiento` (AyA), que sí tiene curva en
+`degradation_engine`. Es un patrón consistente en todo el modelo, no algo
+específico de T&D: una subestación (o una presa, o una planta) es un
+conjunto de activos con modos de falla distintos, no un componente único.
+El mecanismo correcto ya existe — declarar varios componentes de inacción
+por proyecto (Paso 2, D-14), uno por activo crítico con familia propia —
+en vez de buscar una curva Weibull para el agregado completo. Se documentó
+esta decisión de diseño directamente en `config.json`
+(`asset_horizons_by_bu.TyD._nota_subestaciones_D18`) para que un futuro
+desarrollador no intente "corregir" esto inventando una curva monolítica.
+No requirió cambio de código ni prueba nueva — es una aclaración, no un fix
+de comportamiento. Suite: 322/322 sin cambio.
+
+**Lo que sigue abierto:** solo los 7 tipos del Grupo D, genuinamente sin
+cobertura ni analogía clara: `banco_condensadores`, `linea_transmision`,
+`linea_distribucion`, `transformador_distribucion`, `transformador_medida`,
+`reactancia`, `rele_proteccion`.
+
+---
+
+### D-19 · Los 7 tipos del Grupo D — investigados con fuentes reales, agregados como familias nuevas en `ASSET_FAMILIES` (no a una tabla muerta)
+
+Continuación directa de D-18. El primer intento de cerrar esto (buscar β/η
+en IEEE Std 493 y CIGRE Technical Brochures, las mismas normas ya citadas
+en el resto del modelo) chocó con un límite real y verificado: ambos
+estándares son de pago, y múltiples intentos de extracción (búsqueda web,
+`WebFetch` directo, agregadores secundarios) confirmaron que el contenido
+numérico de las tablas no es accesible sin comprarlas. Se documentó esto
+explícitamente al usuario en vez de rellenar el hueco con una cifra
+aproximada.
+
+**Pivote de fuente.** Se redirigió la búsqueda hacia radicados regulatorios
+públicos de distribuidoras eléctricas — el mismo patrón que ya usa
+`Estrategia_Reposicion_Transformadores_Generacion_EPM.docx` (negocio
+Generación de EPM), que cita un caso real de una cita CIGRE fabricada
+("CIGRÉ TB 642 §4 Tabla 4-3: β=3,2/η=32 años") detectada y retirada por
+verificación contra el documento primario. Se extrajeron directamente, vía
+`pdf.js` en el navegador integrado (los PDF de `aer.gov.au` bloquean
+`WebFocus`/`curl` con DNS/CORS pero sí cargan en un tab real), **~20
+documentos oficiales**: Asset Management Plans de Energex/Ergon (Energy
+Queensland, ante el regulador australiano AER, enero 2024), Technical AMS
+de AusNet Services (transmisión y distribución, 2020-2025) y las 233
+páginas completas de Ofgem CNAIM v2.1 (metodología obligatoria de todas
+las distribuidoras del Reino Unido).
+
+**Hallazgo de arquitectura antes de escribir cualquier número.** Verificar
+"primero el fix" (disciplina ya establecida en D-16) reveló que escribir
+estos 7 β/η en `degradation_engine.weibull_beta_by_class` o
+`risk_growth_rate_by_asset` los habría dejado **exactamente tan inertes
+como la tabla original de D-16**: esos 7 tipos no existían como opción en
+`ASSET_FAMILIES`, que es la única estructura que realmente alcanza al
+analista (`w_asset_family` → `RiskInput.asset_type`, confirmado en D-16/D-17).
+El único camino para que el fix sea real es agregar las 7 como familias
+nuevas, seleccionables en el desplegable "Familia de activo" para TyD —
+confirmado con el usuario antes de tocar código, dado que es un cambio más
+grande que calibrar un número (una opción nueva y visible en la app, no
+solo datos).
+
+**Los 7 valores, con su nivel de certeza declarado:**
+
+| Familia | β | η (años) | Fuente | Certeza |
+|---|---|---|---|---|
+| `transformador_medida` | 3,5 | 45 | AusNet AMS 01-09 (29-oct-2020), Tabla 22 "Weibull Rates by Asset" | Alta — citado directo, confirmado por segunda fuente independiente (Energex/Ergon: "expected life... 45 years") |
+| `linea_transmision` | 7 | 70 | AusNet AMS 01-09, Tabla 22, fila Conductor | Alta — citado directo, cruzado con Ofgem CNAIM Tabla 20 (conductor Cu 132kV = 70a, coincide exacto) |
+| `transformador_distribucion` | 3,5* | 60 | Ofgem CNAIM v2.1 (1-abr-2021), Tabla 20 "Normal Expected Life" | Media — η real (curva propia K/C de CNAIM, no Weibull clásico); β=3,5 por analogía a AusNet fila Transformer (misma clase de activo) |
+| `linea_distribucion` | 3,5* | 55 | Energex/Ergon AMP Overhead Conductor (ene-2024) — inicio de riesgo por corrosión SC/GZ | Media — η es un umbral observado, no un η de diseño; β por analogía |
+| `reactancia` | 3,5* | 42 | AusNet AMS 10-67 (10-nov-2025) — banda 40-45a "nearing end of life", punto medio | Media-baja — η es punto medio de una banda de reemplazo observada, no un η publicado |
+| `banco_condensadores` | 3,5* | 30 ⚠️ | AusNet AMS 10-53 (29-oct-2020) — vida de diseño del reactor serie/inrush | **Sesgo declarado**: el modo de falla dominante real es el "can" (31,8% de notificaciones 2015-2019), que falla antes que el reactor — sin cifra citable del can, η=30 probablemente sobreestima la vida real del banco |
+| `rele_proteccion` | 3,5* | 20 | Energex/Ergon AMP Protection Relays (ene-2024) — vida esperada tecnología microprocesador | Media — 3 cifras reales según tecnología (electromecánico 45a/estático 25a/microprocesador 20a); se eligió la más corta porque es la tecnología que EPM adquiere hoy y la de mayor tasa de falla normalizada, no un promedio |
+
+`*` β=3,5 asumido por analogía documentada: es el mismo valor que AusNet
+usa para interruptores, transformadores de medida y transformadores de
+potencia en su propia Tabla 22 — un patrón real de "equipo eléctrico con
+aislamiento papel-aceite/epóxico", no un número inventado sin referencia.
+Ningún marco público consultado (AusNet clásico Weibull, Ofgem CNAIM
+curva K/C) publica β para estos 5 tipos específicamente — confirmado tras
+revisar sus documentos dedicados (AMS 20-58, AMS 20-69, AMS 20-52, AMS
+10-68) sin encontrar una tabla de parámetros de forma.
+
+**Corrección propia detectada antes de implementar:** al resumir "los 4
+que quedan sin β" se dejó fuera por error a `transformador_distribucion`
+(que también necesita β por analogía, ya que CNAIM no publica uno) —
+detectado al preparar la implementación, corregido a 5 antes de escribir
+código.
+
+**Corrección.** Se agregaron las 7 como entradas nuevas en
+`ASSET_FAMILIES` (`epm_core.py`), cada una con `bus_aplicables: ["TyD"]`,
+`metodologia_preferred: "asset_aware"`, `weibull_defaults` con la nota de
+procedencia y certeza, `modos_falla` y `sc_ids: ["VD-1-A", "VD-1-B"]`
+(mismos sub-criterios que `interruptor_seccionador`/`cable_subterraneo`,
+ya que su falla afecta la misma consecuencia de continuidad T&D).
+
+Se agregó el grupo **S40** (9 pruebas): los 7 valores citados existen y
+coinciden exactamente; **las 7 son alcanzables reproduciendo el filtro
+literal que usa la app** para poblar el selector de TyD (la prueba que
+D-16 no tenía — no basta con que el dato exista, hay que probar que el
+camino de la UI llega a él); las 3 familias previas de TyD siguen
+intactas; el total de familias TyD ahora es 11 (3 previas + 7 nuevas +
+`"otro"`); ninguna familia nueva pisa una clave existente;
+`metodologia_preferred` es `asset_aware` en las 7; las 7 tienen `sc_ids`
+no vacíos; `banco_condensadores` declara el sesgo en su nota; y
+`rele_proteccion` usa la cifra de microprocesador, no la de electromecánico
+(prueba que discrimina la elección real, no solo que exista un número).
+Suite completa: 322 → 331 (+9), **331/331 en verde**.
+
+**Lo que sigue abierto:**
+- Los 6 rates de `risk_growth_rate_by_asset` (D-17) siguen sin
+  recalibrar contra su β real citado hoy.
+- El documento de calibración T&D (`Informe_TyD_Guia_Validacion_v1.docx`,
+  scratchpad) sigue desactualizado frente a D-16/17/18/19 — no se ha
+  tocado por instrucción explícita del usuario ("no quiero el documento").
+- `banco_condensadores` con η=30 es una cota optimista conocida — si EPM
+  llega a tener datos propios de vida del "can" (SIGEAS o equivalente),
+  debe reemplazar esta cifra.
+- La sección §2.2 del informe de calibración AyA también quedó
+  desactualizada por los hallazgos de D-16 — no se ha planteado al usuario
+  aún, se marca aquí para cuando retome trabajo de documento.
+
+---
+
 ## Cobertura de la suite
 
 | Grupo | Qué vigila | Mutantes probados | Muertos |

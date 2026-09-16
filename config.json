@@ -197,6 +197,7 @@
     "TyD": {
       "_default": 30,
       "_nota": "Activos T&D: transformadores y subestaciones tienen vida útil 30-40a (RETIE). Equipos de control 10-15a.",
+      "_nota_subestaciones_D18": "subestacion_GIS/AIS/civil son horizontes de referencia (para la Vista de Flota) — deliberadamente NO tienen curva Weibull propia, aquí ni en ningún otro negocio (mismo patrón sin curva en presa_concreto, planta_potabilizacion, tanque_concreto de otras BU): una subestación es un conjunto de activos (transformador, interruptores, celdas, obra civil), cada uno con su propia curva, no un componente único con un solo modo de falla. Para un proyecto real sobre una subestación, el analista debería declarar varios componentes de inacción (Paso 2, D-14) — uno por activo crítico con familia propia (transformador_potencia, interruptor_seccionador) — en vez de buscar una curva Weibull para 'la subestación'. La porción de obra civil se evalúa por Ruta B/matriz 1-5, no por Weibull. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-18.",
       "transformador_potencia": 30,
       "transformador_distribucion": 25,
       "interruptor_potencia": 25,
@@ -793,22 +794,22 @@
       "1": {
         "label": "Muy Baja",
         "annual_prob": 0.002,
-        "_ancla": "Activo en óptimo estado — vida útil restante > 80%"
+        "_ancla": "Activo en óptimo estado: vida útil restante > 80%"
       },
       "2": {
         "label": "Baja",
         "annual_prob": 0.01,
-        "_ancla": "Activo en buen estado — mantenimiento al día"
+        "_ancla": "Activo en buen estado: mantenimiento al día"
       },
       "3": {
         "label": "Moderada",
         "annual_prob": 0.05,
-        "_ancla": "Activo con señales de deterioro — inspección reciente"
+        "_ancla": "Activo con señales de deterioro: inspección reciente"
       },
       "4": {
         "label": "Alta",
         "annual_prob": 0.2,
-        "_ancla": "Activo degradado — fin de vida útil próximo"
+        "_ancla": "Activo degradado: fin de vida útil próximo"
       },
       "5": {
         "label": "Muy Alta",

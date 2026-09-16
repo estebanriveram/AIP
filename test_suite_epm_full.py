@@ -5434,6 +5434,349 @@ class S36_WeibullMultiComponente(unittest.TestCase):
         self.assertEqual(r.residual_probability_level, 2)
 
 
+class S37_WeibullLookupDosTablas(unittest.TestCase):
+    """_get_weibull_params_for_asset() consulta dos tablas de config, con
+    convenciones de nombre de clave distintas y desconectadas entre si:
+
+      optimal_timing.weibull_params_by_asset       (motor de riesgo/timing)
+      degradation_engine.weibull_beta_by_class      (motor de degradacion, Modulo B)
+
+    El selector de tipo de activo del asistente (`asset_horizons_by_bu`) usa
+    la convencion de nombres de la SEGUNDA tabla (interruptor_potencia,
+    celda_MT, cable_energia, sistema_control_SCADA, medidor_AMI) — antes de
+    D-16, esos 5 tipos de T&D eran seleccionables pero invisibles para este
+    lookup, y cualquier proyecto con ese asset_type caia al exponencial plano
+    (risk_growth_rate_by_bu) en silencio pese a tener una curva calibrada y
+    citada (CIGRE/IEEE/IEC/EPRI) para ese activo. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-16."""
+
+    def _cfg(self):
+        return _cfg()
+
+    def _engine(self):
+        return ValueEngine(self._cfg())
+
+    def test_clave_solo_en_degradation_engine_ahora_resuelve(self):
+        """interruptor_potencia no existe en optimal_timing.weibull_params_by_asset
+        pero si en degradation_engine.weibull_beta_by_class (IEEE Std 493-2007
+        Tabla 3-13, beta=2.8, eta=30a) — antes de D-16 devolvia None."""
+        beta, eta = self._engine()._get_weibull_params_for_asset("interruptor_potencia")
+        self.assertAlmostEqual(beta, 2.8)
+        self.assertAlmostEqual(eta, 30.0)
+
+    def test_los_5_tipos_TyD_antes_inalcanzables_ahora_resuelven(self):
+        """Los 5 tipos de activo T&D que el selector del asistente puede
+        producir pero que optimal_timing.weibull_params_by_asset no cubre."""
+        esperados = {
+            "interruptor_potencia":  (2.8, 30.0),
+            "celda_MT":              (2.5, 25.0),
+            "cable_energia":         (3.0, 35.0),
+            "sistema_control_SCADA": (1.5, 15.0),
+            "medidor_AMI":           (1.8, 12.0),
+        }
+        engine = self._engine()
+        for asset_type, (beta_esp, eta_esp) in esperados.items():
+            with self.subTest(asset_type=asset_type):
+                resultado = engine._get_weibull_params_for_asset(asset_type)
+                self.assertIsNotNone(resultado, f"{asset_type} deberia resolver via degradation_engine")
+                beta, eta = resultado
+                self.assertAlmostEqual(beta, beta_esp)
+                self.assertAlmostEqual(eta, eta_esp)
+
+    def test_tabla_original_conserva_prioridad_y_sigue_funcionando(self):
+        """Las claves que YA resolvian por optimal_timing.weibull_params_by_asset
+        (transformador_potencia, reconectador, cable_mt, cable_at) no deben
+        cambiar de valor ni de fuente: esa tabla se consulta primero."""
+        engine = self._engine()
+        self.assertEqual(engine._get_weibull_params_for_asset("transformador_potencia"), (1.31, 290.0))
+        self.assertEqual(engine._get_weibull_params_for_asset("reconectador"), (2.8, 30.0))
+        self.assertEqual(engine._get_weibull_params_for_asset("cable_mt"), (2.2, 30.0))
+        self.assertEqual(engine._get_weibull_params_for_asset("cable_at"), (2.0, 35.0))
+
+    def test_asset_type_sin_curva_en_ninguna_tabla_sigue_devolviendo_none(self):
+        """Tipos de activo T&D genuinamente sin curva en ninguna de las dos
+        tablas (linea_transmision, subestacion_civil) deben seguir devolviendo
+        None — no se debe inventar una curva donde no existe ninguna."""
+        engine = self._engine()
+        self.assertIsNone(engine._get_weibull_params_for_asset("linea_transmision"))
+        self.assertIsNone(engine._get_weibull_params_for_asset("subestacion_civil"))
+
+    def test_entradas_no_dict_de_degradation_engine_no_rompen_el_lookup(self):
+        """weibull_beta_by_class trae claves de metadato que no son un tipo de
+        activo (_nota, _revision, _T&D, _AyA como separadores de seccion) —
+        el lookup no debe intentar leer beta/eta de esas entradas."""
+        engine = self._engine()
+        deg = engine.config.get("degradation_engine", {})
+        beta_cfg = deg.get("weibull_beta_by_class", {})
+        metadatos = [k for k, v in beta_cfg.items() if not isinstance(v, dict)]
+        self.assertGreater(len(metadatos), 0, "la config deberia traer al menos un separador de seccion")
+        for clave in metadatos:
+            self.assertIsNone(engine._get_weibull_params_for_asset(clave))
+
+
+class S38_RiskGrowthRateByAssetFamilias(unittest.TestCase):
+    """risk_growth_rate_by_asset (el override "mas especifico" de
+    _get_risk_growth_rate) usaba nombres de clave que RiskInput.asset_type
+    nunca produce en produccion (el unico emisor real es w_asset_family, es
+    decir, una clave de ASSET_FAMILIES). D-17 renombro 4 de las 6 claves
+    para que si sean alcanzables. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-17."""
+
+    def _cfg(self):
+        return _cfg()
+
+    def _engine(self):
+        return ValueEngine(self._cfg())
+
+    def test_las_4_claves_renombradas_ahora_resuelven(self):
+        """interruptor_seccionador, cable_subterraneo, bomba_impulsion y
+        valvula_regulador son las claves reales de ASSET_FAMILIES para T&D/
+        AyA/Gas — antes de D-17 ninguna de las 4 existia en esta tabla.
+
+        Cada caso usa una BU cuya tasa de negocio (nivel 2 de la jerarquia)
+        es DISTINTA de la tasa especifica esperada (nivel 1) — si la prueba
+        usara TyD para interruptor_seccionador, ambas coinciden en 0.15 por
+        coincidencia numerica y la asercion pasaria igual aunque el override
+        no se alcanzara: no discriminaria una regresion real."""
+        engine = self._engine()
+        casos = [
+            # (asset_type, BU de prueba, tasa especifica esperada, tasa BU de esa unidad)
+            ("interruptor_seccionador", "Generacion", 0.15, 0.13),
+            ("cable_subterraneo",       "TyD",         0.10, 0.15),
+            ("bomba_impulsion",         "AyA",         0.18, 0.10),
+            ("valvula_regulador",       "Gas",         0.14, 0.12),
+        ]
+        for asset_type, bu, tasa_esp, tasa_bu in casos:
+            with self.subTest(asset_type=asset_type):
+                self.assertNotAlmostEqual(
+                    tasa_esp, tasa_bu,
+                    msg=f"caso mal elegido: {asset_type} y {bu} coinciden, no discrimina")
+                self.assertAlmostEqual(
+                    engine._get_risk_growth_rate(bu, asset_type), tasa_esp)
+
+    def test_claves_que_ya_coincidian_no_cambiaron_de_valor(self):
+        """transformador_potencia y tuberia_conduccion ya tenian el mismo
+        nombre en ASSET_FAMILIES y en esta tabla — D-17 no debia tocarlas."""
+        engine = self._engine()
+        self.assertAlmostEqual(engine._get_risk_growth_rate("TyD", "transformador_potencia"), 0.12)
+        self.assertAlmostEqual(engine._get_risk_growth_rate("Generacion", "tuberia_conduccion"), 0.08)
+
+    def test_claves_viejas_ya_no_alcanzables_caen_a_nivel_BU(self):
+        """'interruptor' y 'cable_mt' (las claves viejas, nunca producidas
+        por ningun emisor real) ya no estan en la tabla: deben caer al nivel
+        2 de la jerarquia (risk_growth_rate_by_bu), no fallar ni devolver
+        un valor especifico fantasma."""
+        engine = self._engine()
+        tasa_bu_tyd = self._cfg()["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"]
+        self.assertAlmostEqual(engine._get_risk_growth_rate("TyD", "interruptor"), tasa_bu_tyd)
+        self.assertAlmostEqual(engine._get_risk_growth_rate("TyD", "cable_mt"), tasa_bu_tyd)
+
+    def test_familias_reales_sin_tasa_propia_caen_a_nivel_BU_sin_inventar_numero(self):
+        """compresor y turbina_grupo_hidraulico SI son familias reales de
+        ASSET_FAMILIES (Gas y Generacion respectivamente) pero D-17
+        deliberadamente no les agrego una tasa especifica por falta de base
+        para derivarla — deben caer al nivel de negocio, no a un valor
+        inventado."""
+        engine = self._engine()
+        cfg = self._cfg()
+        tasa_bu_gas = cfg["optimal_timing"]["risk_growth_rate_by_bu"]["Gas"]
+        tasa_bu_gen = cfg["optimal_timing"]["risk_growth_rate_by_bu"]["Generacion"]
+        self.assertAlmostEqual(engine._get_risk_growth_rate("Gas", "compresor"), tasa_bu_gas)
+        self.assertAlmostEqual(
+            engine._get_risk_growth_rate("Generacion", "turbina_grupo_hidraulico"), tasa_bu_gen)
+
+    def test_scada_sistema_retirada_cae_a_nivel_BU(self):
+        """'scada_sistema' se retiro de risk_growth_rate_by_asset: ninguna
+        familia de ASSET_FAMILIES se llama asi para ningun negocio, asi que
+        esa clave nunca fue ni sera alcanzable — dejarla habria sido tan
+        muerta como las que se renombraron."""
+        engine = self._engine()
+        tasa_bu_tyd = self._cfg()["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"]
+        self.assertAlmostEqual(engine._get_risk_growth_rate("TyD", "scada_sistema"), tasa_bu_tyd)
+
+    def test_asset_family_es_la_unica_fuente_real_de_asset_type_en_riskinput(self):
+        """Documenta, con una asercion ejecutable, el hallazgo de D-17: las
+        claves de ASSET_FAMILIES son un subconjunto de las que ahora tiene
+        risk_growth_rate_by_asset (para las que SI tienen tasa propia) o
+        caen limpiamente al nivel BU (para las que no) — ninguna clave de
+        ASSET_FAMILIES debe producir un KeyError ni un valor fuera de rango."""
+        engine = self._engine()
+        familias = [k for k in epm_core.ASSET_FAMILIES if k != "otro"]
+        self.assertGreater(len(familias), 0)
+        for familia in familias:
+            with self.subTest(familia=familia):
+                bu = epm_core.ASSET_FAMILIES[familia]["bus_aplicables"][0]
+                tasa = engine._get_risk_growth_rate(bu, familia)
+                self.assertTrue(0.0 < tasa < 1.0, f"{familia} dio una tasa fuera de rango: {tasa}")
+
+
+class S39_GranularAssetTypesDeAssetFamilies(unittest.TestCase):
+    """D-18: 'granular_asset_types' es la conexion documental entre las
+    claves granulares que el analista ve en "Tipo de activo" (horizonte,
+    asset_horizons_by_bu) y la familia de ASSET_FAMILIES que deberia usar
+    para su curva Weibull. Es solo metadato -- no cambia el comportamiento
+    del asistente -- pero si tiene un typo o una clave que no existe en
+    ningun negocio, la conexion documental queda rota igual que las que
+    D-16/D-17 encontraron."""
+
+    def _cfg(self):
+        return _cfg()
+
+    def test_cada_tipo_granular_listado_existe_en_algun_negocio(self):
+        """Cada clave en granular_asset_types debe existir de verdad en
+        asset_horizons_by_bu de al menos uno de los negocios aplicables de
+        esa familia -- si no, el "tipo cubierto" es un nombre inventado."""
+        cfg = self._cfg()
+        ah = cfg["asset_horizons_by_bu"]
+        for familia, meta in epm_core.ASSET_FAMILIES.items():
+            granulares = meta.get("granular_asset_types")
+            if not granulares:
+                continue
+            bus = meta.get("bus_aplicables", [])
+            with self.subTest(familia=familia):
+                for tipo in granulares:
+                    existe_en_alguna_bu = any(
+                        tipo in ah.get(bu, {}) for bu in bus if bu != "Todos"
+                    )
+                    self.assertTrue(
+                        existe_en_alguna_bu,
+                        f"{familia}.granular_asset_types tiene '{tipo}', que no "
+                        f"existe en asset_horizons_by_bu de ninguna BU aplicable {bus}")
+
+    def test_interruptor_seccionador_cubre_los_4_tipos_del_grupo_A(self):
+        meta = epm_core.ASSET_FAMILIES["interruptor_seccionador"]
+        for tipo in ["interruptor_at", "interruptor_mt", "seccionador", "reconectador"]:
+            self.assertIn(tipo, meta["granular_asset_types"])
+
+    def test_cable_subterraneo_cubre_cable_bt(self):
+        meta = epm_core.ASSET_FAMILIES["cable_subterraneo"]
+        self.assertIn("cable_bt", meta["granular_asset_types"])
+
+    def test_ningun_tipo_granular_se_asigna_a_dos_familias_distintas(self):
+        """Si el mismo tipo granular apareciera en granular_asset_types de
+        dos familias distintas, la "conexion" seria ambigua -- que familia
+        deberia sugerirse."""
+        vistos = {}
+        for familia, meta in epm_core.ASSET_FAMILIES.items():
+            for tipo in meta.get("granular_asset_types") or []:
+                self.assertNotIn(
+                    tipo, vistos,
+                    f"'{tipo}' aparece en '{familia}' y en '{vistos.get(tipo)}'")
+                vistos[tipo] = familia
+
+
+class S40_GrupoD_NuevasFamiliasTyD(unittest.TestCase):
+    """D-19: 7 tipos de activo T&D (banco_condensadores, linea_transmision,
+    linea_distribucion, transformador_distribucion, transformador_medida,
+    reactancia, rele_proteccion) no existian como opcion seleccionable en
+    ASSET_FAMILIES -- cualquier analista con uno de estos activos caia en
+    "otro" (sin curva Weibull), sin importar que tan bien calibrada
+    estuviera cualquier tabla separada (ese fue exactamente el hallazgo de
+    D-16: una tabla correcta que nadie alcanza es inerte). Estas pruebas
+    verifican tanto los valores citados como que las 7 familias son
+    alcanzables por el mismo filtro que usa la app para poblar el selector
+    "Familia de activo" -- no solo que el dato exista en el diccionario."""
+
+    NUEVAS = ["transformador_medida", "linea_transmision",
+              "transformador_distribucion", "linea_distribucion",
+              "reactancia", "banco_condensadores", "rele_proteccion"]
+
+    VALORES_CITADOS = {
+        "transformador_medida":        {"beta": 3.5, "eta": 45.0},
+        "linea_transmision":           {"beta": 7.0, "eta": 70.0},
+        "transformador_distribucion":  {"beta": 3.5, "eta": 60.0},
+        "linea_distribucion":          {"beta": 3.5, "eta": 55.0},
+        "reactancia":                  {"beta": 3.5, "eta": 42.0},
+        "banco_condensadores":         {"beta": 3.5, "eta": 30.0},
+        "rele_proteccion":             {"beta": 3.5, "eta": 20.0},
+    }
+
+    def test_las_7_familias_existen_con_los_valores_citados(self):
+        for familia, esperado in self.VALORES_CITADOS.items():
+            with self.subTest(familia=familia):
+                self.assertIn(familia, epm_core.ASSET_FAMILIES)
+                wd = epm_core.ASSET_FAMILIES[familia]["weibull_defaults"]
+                self.assertIsNotNone(wd, f"{familia} no debe caer en 'otro' (beta=None)")
+                self.assertAlmostEqual(wd["beta"], esperado["beta"], places=3)
+                self.assertAlmostEqual(wd["eta"], esperado["eta"], places=3)
+
+    def test_las_7_familias_son_alcanzables_por_el_filtro_de_la_app(self):
+        """Reproduce exactamente el filtro de app_epm_aip_full_enterprise.py
+        (linea ~3449-3452: `{k: v for k, v in ASSET_FAMILIES.items() if
+        _w_bu in v.get("bus_aplicables", [])}`) para TyD. Si una familia
+        tiene los numeros correctos pero falta "TyD" en bus_aplicables,
+        esta prueba la atrapa -- es exactamente la clase de error que D-16
+        dejo pasar (dato correcto, camino muerto)."""
+        opts_tyd = {k: v for k, v in epm_core.ASSET_FAMILIES.items()
+                    if "TyD" in v.get("bus_aplicables", [])}
+        for familia in self.NUEVAS:
+            self.assertIn(familia, opts_tyd,
+                          f"{familia} no aparece en el selector de Familia de "
+                          f"activo para TyD -- quedaria inalcanzable como D-16")
+
+    def test_las_3_familias_previas_de_tyd_siguen_intactas(self):
+        previas = {
+            "transformador_potencia": {"beta": 1.31, "eta": 290.0},
+            "interruptor_seccionador": {"beta": 2.8, "eta": 25.0},
+            "cable_subterraneo": {"beta": 4.0, "eta": 30.0},
+        }
+        for familia, esperado in previas.items():
+            with self.subTest(familia=familia):
+                wd = epm_core.ASSET_FAMILIES[familia]["weibull_defaults"]
+                self.assertAlmostEqual(wd["beta"], esperado["beta"], places=3)
+                self.assertAlmostEqual(wd["eta"], esperado["eta"], places=3)
+
+    def test_total_familias_tyd_ahora_es_11(self):
+        opts_tyd = {k: v for k, v in epm_core.ASSET_FAMILIES.items()
+                    if "TyD" in v.get("bus_aplicables", [])}
+        # 3 previas (transformador_potencia, interruptor_seccionador,
+        # cable_subterraneo) + 7 nuevas de D-19 + "otro" (catch-all,
+        # aplica a todas las BUs)
+        self.assertEqual(len(opts_tyd), 11, sorted(opts_tyd.keys()))
+
+    def test_ninguna_familia_nueva_pisa_una_clave_existente(self):
+        preexistentes = {"transformador_potencia", "interruptor_seccionador",
+                          "cable_subterraneo", "turbina_grupo_hidraulico",
+                          "tuberia_conduccion", "bomba_impulsion",
+                          "valvula_regulador", "compresor", "otro"}
+        for familia in self.NUEVAS:
+            self.assertNotIn(familia, preexistentes)
+
+    def test_metodologia_preferred_asset_aware_para_las_7(self):
+        """Con beta/eta reales citados, el techo de precision debe ser
+        asset_aware (Weibull/EEOL) -- igual que las otras familias T&D con
+        curva, no driver_based/concept_rating."""
+        for familia in self.NUEVAS:
+            with self.subTest(familia=familia):
+                self.assertEqual(
+                    epm_core.ASSET_FAMILIES[familia]["metodologia_preferred"],
+                    "asset_aware")
+
+    def test_las_7_tienen_sc_ids_no_vacios(self):
+        """sc_ids vacio significa que la familia no conecta con ningun
+        sub-criterio de BU_DRIVER_CONFIG para el calculo driver-based de
+        respaldo (fallback_allowed) -- las 7 deben reusar VD-1-A/VD-1-B
+        (ENS evitada / SAIDI-SAIFI), igual que interruptor_seccionador y
+        cable_subterraneo, ya que su falla afecta la misma consecuencia de
+        continuidad de servicio T&D."""
+        for familia in self.NUEVAS:
+            with self.subTest(familia=familia):
+                self.assertTrue(epm_core.ASSET_FAMILIES[familia]["sc_ids"])
+
+    def test_banco_condensadores_documenta_el_sesgo_optimista(self):
+        """eta=30 es la vida del reactor serie, no del 'can' (modo de falla
+        dominante real, sin cifra citable) -- la nota debe declarar el
+        sesgo explicitamente en vez de quedar como un numero silencioso."""
+        nota = epm_core.ASSET_FAMILIES["banco_condensadores"]["weibull_defaults"]["nota"]
+        self.assertIn("SESGO", nota.upper())
+
+    def test_rele_proteccion_usa_microprocesador_no_electromecanico(self):
+        """El documento fuente da 3 cifras (electromecanico 45a, estatico
+        25a, microprocesador 20a) -- confirma que se tomo la mas corta
+        (microprocesador), no un promedio ni la mas larga."""
+        wd = epm_core.ASSET_FAMILIES["rele_proteccion"]["weibull_defaults"]
+        self.assertAlmostEqual(wd["eta"], 20.0, places=3)
+        self.assertLess(wd["eta"], 45.0)  # no se uso electromecanico
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # RUNNER + INFORME
 # ─────────────────────────────────────────────────────────────────────────────

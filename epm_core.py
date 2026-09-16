@@ -205,8 +205,13 @@ DEFAULT_CONFIG = {
             "subestacion_civil":         50,    # Obra civil: 50a mínimo
             # ── Protecciones y control ──
             "rele_proteccion":           15,    # IED digital: obsolescencia ~15a (IEC 61850)
-            "sistema_scada":             12,    # Gartner: sistemas SCADA/DMS 10-15a
-            "medidor_inteligente":       15,    # AMI: vida regulatoria Res. CREG 038/2014
+            # "sistema_scada" y "medidor_inteligente" (D-18): retirados de aquí —
+            # eran nombres legado de este DEFAULT_CONFIG, duplicados sin
+            # deprecar frente a "sistema_control_SCADA" y "medidor_AMI", que
+            # ya viven en config.json (la fuente viva) para las 4 BU. El
+            # selector "Tipo de activo" del asistente mostraba ambos nombres
+            # para el mismo activo físico, sin que ninguno de los dos
+            # apuntara a una familia Weibull real. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-18.
             # ── Condensadores y reactivos ──
             "banco_condensadores":       20,    # IEEE 18: condensadores de potencia
             "reactancia":                25,    # Reactores de potencia
@@ -230,7 +235,8 @@ DEFAULT_CONFIG = {
             "transformador_potencia":    30,    # IEC 60076-7 (guía de carga/vida)
             "transformador_elevador":    35,    # Mayor rated power, mejor diseño térmico
             # ── Control y protección ──
-            "sistema_scada":             12,
+            # "sistema_scada" retirado (D-18) — duplicado sin deprecar del
+            # "sistema_control_SCADA" que ya vive en config.json.
             "rele_proteccion":           15,
             "sistema_excitacion":        20,    # Excitadores estáticos
             "gobernador":                20,    # Gobernadores digitales
@@ -263,8 +269,9 @@ DEFAULT_CONFIG = {
             "tanque_concreto":           50,    # Tanques de almacenamiento concreto
             "tanque_metalico":           30,    # Tanques metálicos con recubrimiento
             # ── Control ──
-            "sistema_scada":             12,
-            "medidor_inteligente":       15,
+            # "sistema_scada" y "medidor_inteligente" retirados (D-18) —
+            # duplicados sin deprecar de "sistema_control_SCADA"/"medidor_AMI",
+            # que ya viven en config.json.
         },
         "Gas": {
             "_default":                  30,    # Activo gas natural genérico
@@ -285,7 +292,8 @@ DEFAULT_CONFIG = {
             "compresor_reciprocante":    20,    # API 618: 20-25a
             "compresor_centrifugo":      25,    # API 617: 25-30a
             # ── Control ──
-            "sistema_scada":             12,
+            # "sistema_scada" retirado (D-18) — duplicado sin deprecar del
+            # "sistema_control_SCADA" que ya vive en config.json.
             "sistema_telemetria":        12,
         },
     },
@@ -462,13 +470,27 @@ DEFAULT_CONFIG = {
         # Jerarquía: by_asset > by_bu > global. Calibrar con historial EPM/ASPD.
         "risk_growth_rate_by_asset": {
             "_nota": "Tasas derivadas de β Weibull por familia de activo. Overrides by_bu. Calibrar con historial fallas EPM.",
-            "transformador_potencia": 0.12,   # β≈2.5 — desgaste gradual dieléctrico
-            "tuberia_conduccion":     0.08,   # β≈1.8 — corrosión lenta
-            "interruptor":            0.15,   # β≈3.0 — desgaste mecánico acelerado
-            "cable_mt":               0.10,   # β≈2.2 — degradación aislamiento
-            "scada_sistema":          0.22,   # β≈4.0 — obsolescencia tecnológica rápida
-            "bomba_centrifuga":       0.18,   # β≈3.5 — cavitación y desgaste
-            "valvula_control":        0.14,   # β≈2.8 — desgaste asiento/vástago
+            "_D17": "Claves renombradas a la nomenclatura real de ASSET_FAMILIES "
+                    "(la única que RiskInput.asset_type recibe en producción, vía "
+                    "w_asset_family) — con las claves viejas ('interruptor', "
+                    "'cable_mt', etc.) esta tabla nunca se alcanzaba para esos 4 "
+                    "activos. PENDIENTE: el β asumido para derivar cada tasa (ver "
+                    "comentario) ya NO coincide con el β real y citado que usa hoy "
+                    "ASSET_FAMILIES/weibull_defaults para esa misma familia — ninguna "
+                    "de las 6 tasas fue recalculada contra la curva vigente. Valores "
+                    "provisionales hasta ese recálculo. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-17.",
+            "transformador_potencia":  0.12,   # β asumido≈2.5 — β real citado (CIGRE 2026): 1,31
+            "tuberia_conduccion":      0.08,   # β asumido≈1.8 — β real citado (AWWA/ISO/API): 3,0
+            "interruptor_seccionador": 0.15,   # β asumido≈3.0 — β real citado (IEC 62271-100): 2,8
+            "cable_subterraneo":       0.10,   # β asumido≈2.2 — β real citado (IEC 60502/IEEE 400): 4,0
+            "bomba_impulsion":         0.18,   # β asumido≈3.5 — β real citado (HI 9.6.4/ISO 9906): 2,2
+            "valvula_regulador":       0.14,   # β asumido≈2.8 — β real citado (API 580/ISO 15848): 2,0
+            # "scada_sistema" (0.22, β asumido≈4.0) se retira: ASSET_FAMILIES no
+            # tiene ninguna familia SCADA para T&D/Generación/Gas/AyA — esa clave
+            # nunca fue ni será alcanzable por RiskInput.asset_type en producción.
+            # "compresor" y "turbina_grupo_hidraulico" SÍ son familias reales de
+            # ASSET_FAMILIES sin entrada aquí — no se agregó una tasa inventada;
+            # sin entrada específica, caen correctamente a risk_growth_rate_by_bu.
         },
         # C55 — Parámetros Weibull por tipo de activo EPM
         # Fuentes de referencia (pendiente calibración con historial fallas EPM/ASPD):
@@ -660,8 +682,8 @@ DEFAULT_CONFIG = {
                               "anchor": "Brote significativo. 5,000 afectados, 200 hospitalizaciones, ~3 muertes. "
                                         "3 × VSL 2,500M neto = 7,500M + atención masiva + emergencia MINSALUD = 8,000M."},
                         "5": {"value_COP": 40_000_000_000,
-                              "anchor": "Epidemia regional. 10+ muertes × VSL 4,500M = 45,000M + miles de enfermos + "
-                                        "demandas masivas + emergencia estatal + intervención MINSALUD. "
+                              "anchor": "Epidemia regional. 10 muertes × VSL 2,500M neto = 25,000M + miles de enfermos + "
+                                        "demandas masivas + emergencia estatal + intervención MINSALUD = 40,000M. "
                                         "Escala completamente distinta a accidente laboral. Ref: brotes hídricos en Colombia (Quibdó, Chocó)."},
                     },
                     "Gas": {
@@ -1843,6 +1865,17 @@ ASSET_FAMILIES: Dict[str, dict] = {
         "bus_aplicables": ["TyD", "Generacion"],
         "metodologia_preferred": "asset_aware",
         "fallback_allowed": ["driver_based", "concept_rating"],
+        # D-18: conexión explícita con las claves granulares de
+        # asset_horizons_by_bu que un analista puede elegir en "Tipo de
+        # activo" (horizonte) pero que no tienen su propia familia — sin
+        # esta lista, elegir cualquiera de ellas deja "Familia de activo"
+        # en "otro" por defecto, sin curva Weibull sugerida. reconectador
+        # ya tenía un valor cercano (β=2,8/η=30) en la tabla muerta de D-16,
+        # consistente con este β=2,8 — refuerza que el mapeo es razonable,
+        # no arbitrario. Solo documental por ahora: no cambia el
+        # comportamiento del asistente, que sigue exigiendo selección manual.
+        "granular_asset_types": ["interruptor_potencia", "interruptor_at",
+                                  "interruptor_mt", "seccionador", "reconectador"],
         "weibull_defaults": {
             "beta": 2.8,
             "eta":  25.0,
@@ -1862,6 +1895,11 @@ ASSET_FAMILIES: Dict[str, dict] = {
         "bus_aplicables": ["TyD"],
         "metodologia_preferred": "asset_aware",
         "fallback_allowed": ["driver_based", "concept_rating"],
+        # D-18: ver nota equivalente en "interruptor_seccionador". cable_bt
+        # es de menor tensión que AT/MT — se incluye aquí por falta de una
+        # familia propia, no porque su modo de falla sea idéntico; punto a
+        # validar si BT merece su propia curva más adelante.
+        "granular_asset_types": ["cable_energia", "cable_mt", "cable_at", "cable_bt"],
         "weibull_defaults": {
             "beta": 4.0,
             "eta":  30.0,
@@ -1872,6 +1910,183 @@ ASSET_FAMILIES: Dict[str, dict] = {
             "Degradación del aislamiento XLPE (tracción de agua)",
             "Falla de empalmes por envejecimiento",
             "Falla mecánica por sobrecarga térmica",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    # D-19: siete familias T&D que hasta ahora no existían como opción
+    # seleccionable en "Familia de activo" — solo transformador_potencia,
+    # interruptor_seccionador y cable_subterraneo eran elegibles; cualquier
+    # analista con uno de estos 7 tipos caía en "otro" (sin curva Weibull).
+    # β/η investigados con fuentes reales (radicados regulatorios públicos
+    # AER/Ofgem), no asumidos — ver REGISTRO_ASUNTOS_ABIERTOS.md D-19 para
+    # la traza completa de cada número y su nivel de certeza.
+    "transformador_medida": {
+        "label":   "Transformador de medida (CT/VT)",
+        "icon":    "📏",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  45.0,
+            "norma": "AusNet Services AMS 01-09 Asset Risk Assessment Overview (29-oct-2020), "
+                     "Tabla 22 'Weibull Rates by Asset', fila Instrument transformers",
+            "nota":  "β=3.5/η=45a citado directamente y confirmado por una segunda fuente "
+                     "independiente (Energex/Ergon EQL, AMP Instrument Transformers, ene-2024: "
+                     "\"expected life of instrument transformers is 45 years\"). El más sólido "
+                     "de los 7 tipos D-19.",
+        },
+        "modos_falla": [
+            "Falla de aislamiento del CVT (papel-aceite / epóxico)",
+            "Fuga de aceite en transformadores de corriente",
+            "Falla de componentes de control/auxiliares",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "linea_transmision": {
+        "label":   "Línea de transmisión (aérea, AT)",
+        "icon":    "🗼",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 7.0,
+            "eta":  70.0,
+            "norma": "AusNet Services AMS 01-09 (29-oct-2020), Tabla 22, fila Conductor "
+                     "(nivel transmisión)",
+            "nota":  "β=7/η=70a citado directamente; cross-validado con Ofgem CNAIM v2.1 "
+                     "(1-abr-2021) Tabla 20 'Normal Expected Life', conductor Cu 132kV = 70a "
+                     "(coincide exacto). No confundir con línea de distribución "
+                     "(η=55a, menor estándar constructivo, ver linea_distribucion).",
+        },
+        "modos_falla": [
+            "Falla de conductor por fatiga/corrosión en vanos largos",
+            "Contacto con vegetación o descargas atmosféricas",
+            "Falla de aisladores y herrajes de torre",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "transformador_distribucion": {
+        "label":   "Transformador de distribución",
+        "icon":    "🏘️",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  60.0,
+            "norma": "Ofgem CNAIM v2.1 (1-abr-2021), Tabla 20 'Normal Expected Life' — "
+                     "Transformer (GM) 6.6/11kV y 20kV",
+            "nota":  "η=60a es 'Normal Expected Life' bajo la curva propia K/C de CNAIM, no "
+                     "Weibull clásico — se reutiliza como el ancla de vida más sólida "
+                     "disponible. β=3.5 asumido por analogía con AusNet AMS 01-09 Tabla 22 "
+                     "fila Transformer (misma clase de activo — aislamiento papel-aceite — "
+                     "distinta tensión), no citado directamente para este tipo.",
+        },
+        "modos_falla": [
+            "Degradación de aislamiento papel-aceite por ciclos térmicos",
+            "Falla de bujes",
+            "Corrosión de tanque en ambientes agresivos",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "linea_distribucion": {
+        "label":   "Línea de distribución (aérea, MT/BT)",
+        "icon":    "〰️",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  55.0,
+            "norma": "Energex/Ergon (EQL) AMP Overhead Conductor (ene-2024) — inicio de "
+                     "riesgo por corrosión en conductor SC/GZ observado ~55a",
+            "nota":  "η=55a proviene de un umbral de riesgo observado, no de un η de diseño "
+                     "formal. β=3.5 asumido por analogía — ningún documento público "
+                     "consultado (AusNet, Ofgem CNAIM, Energex/Ergon) publica β para "
+                     "conductor de distribución.",
+        },
+        "modos_falla": [
+            "Corrosión de conductor (acero galvanizado / ACSR)",
+            "Contacto con vegetación",
+            "Falla de empalmes y conectores",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "reactancia": {
+        "label":   "Reactancia / reactor de choque",
+        "icon":    "🌀",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  42.0,
+            "norma": "AusNet Services AMS 10-67 Power Transformers and Oil Filled Reactors "
+                     "(10-nov-2025) — banda 40-45a 'nearing end of life' observada en la "
+                     "flota, punto medio",
+            "nota":  "η=42a es el punto medio de una banda de reemplazo observada, no un η "
+                     "de diseño publicado. β=3.5 asumido por analogía. No confundir con el "
+                     "reactor serie/inrush de bancos de condensadores (ver banco_condensadores, "
+                     "componente distinto con vida de diseño de 30a).",
+        },
+        "modos_falla": [
+            "Degradación de aislamiento papel-aceite",
+            "Falla de sistema de enfriamiento",
+            "Deterioro de indicador de temperatura de devanado (WTI)",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "banco_condensadores": {
+        "label":   "Banco de condensadores",
+        "icon":    "🔲",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  30.0,
+            "norma": "AusNet Services AMS 10-53 Capacitor Banks (29-oct-2020) — vida de "
+                     "diseño del reactor serie/inrush",
+            "nota":  "ADVERTENCIA DE SESGO: η=30a es la vida del reactor serie, NO del banco "
+                     "completo. El propio documento fuente identifica el 'can' (celda del "
+                     "condensador) como el modo de falla dominante (31,8% de las "
+                     "notificaciones de falla 2015-2019) y declara explícitamente que los "
+                     "cans se reemplazan antes que el reactor serie — no hay cifra citable "
+                     "de la vida del can. η=30a probablemente SOBREESTIMA la vida real del "
+                     "banco; se documenta el sesgo en vez de inventar un ajuste. β=3.5 "
+                     "asumido por analogía.",
+        },
+        "modos_falla": [
+            "Falla de celdas del banco ('can') por sobretensión/envejecimiento dieléctrico",
+            "Falla del reactor serie/inrush",
+            "Desbalance de fases por falla progresiva de celdas",
+        ],
+        "sc_ids": ["VD-1-A", "VD-1-B"],
+    },
+    "rele_proteccion": {
+        "label":   "Relé de protección",
+        "icon":    "🛡️",
+        "bus_aplicables": ["TyD"],
+        "metodologia_preferred": "asset_aware",
+        "fallback_allowed": ["driver_based", "concept_rating"],
+        "weibull_defaults": {
+            "beta": 3.5,
+            "eta":  20.0,
+            "norma": "Energex/Ergon (EQL) AMP Protection Relays (ene-2024) — vida esperada "
+                     "de relés tecnología microprocesador",
+            "nota":  "El documento fuente da 3 cifras según tecnología: electromecánico 45a, "
+                     "estático/analógico 25a, microprocesador 20a. Se elige microprocesador "
+                     "(la más corta) porque es la tecnología que EQL y EPM adquieren hoy y "
+                     "porque el propio documento señala que microprocesador tiene la MAYOR "
+                     "tasa de falla normalizada pese a ser la más nueva — usar el valor del "
+                     "electromecánico legado subestimaría el riesgo del parque vigente y "
+                     "futuro. β=3.5 asumido por analogía.",
+        },
+        "modos_falla": [
+            "Obsolescencia de componentes electrónicos (relés microprocesador)",
+            "Operación espuria / mal operación",
+            "Desgaste mecánico de contactos (relés electromecánicos legado)",
         ],
         "sc_ids": ["VD-1-A", "VD-1-B"],
     },
@@ -4076,6 +4291,24 @@ class ValueEngine:
         C55 — Lookup de parámetros Weibull calibrados por clase de activo.
         Retorna None si el tipo no tiene parámetros configurados (usar exponencial).
 
+        Dos fuentes, en este orden:
+          1. optimal_timing.weibull_params_by_asset — tabla original de este
+             motor (riesgo/timing), claves y fuentes dispares.
+          2. degradation_engine.weibull_beta_by_class — tabla del motor de
+             degradación (Módulo B, EEOL), con fuentes citables (CIGRE,
+             IEEE Std 493, IEC, CIGRÉ TB, EPRI) pero usada solo por ese motor.
+             El selector de tipo de activo del asistente (`asset_horizons_by_bu`)
+             usa la convención de nombres de ESTA tabla (interruptor_potencia,
+             celda_MT, cable_energia, sistema_control_SCADA, medidor_AMI) —
+             antes de este fallback, esos 5 tipos de T&D eran seleccionables
+             en el asistente pero invisibles para este lookup: cualquier
+             proyecto con esos asset_type caía al exponencial plano
+             (risk_growth_rate_by_bu) en silencio, aunque existiera una curva
+             calibrada y citada para ese activo. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-16.
+             Formato de esta tabla: {"beta": x, "_eta_años": y, "_fuente": "..."}
+             o escalar suelto (beta) — solo se usa aquí la forma dict con
+             _eta_años, porque sin eta no hay curva utilizable.
+
         Uso sugerido (en evaluate() o ProjectWizard):
             params = engine._get_weibull_params_for_asset(component.asset_type)
             if params:
@@ -4090,6 +4323,17 @@ class ValueEngine:
                 eta  = float(entry.get("eta",  0))
                 if beta > 0 and eta > 0:
                     return beta, eta
+
+        deg_cfg = self.config.get("degradation_engine", {})
+        beta_cfg = deg_cfg.get("weibull_beta_by_class", {})
+        if asset_type and asset_type in beta_cfg:
+            entry = beta_cfg[asset_type]
+            if isinstance(entry, dict):
+                beta = float(entry.get("beta", 0) or 0)
+                eta  = float(entry.get("_eta_años", 0) or 0)
+                if beta > 0 and eta > 0:
+                    return beta, eta
+
         return None
 
     def _get_risk_growth_rate(self, business_unit: str, asset_type: str = "") -> float:
@@ -4103,6 +4347,22 @@ class ValueEngine:
         Nota: cuando RiskInput.weibull_beta > 0, este valor ya no se usa
         en _calc_risk() — el motor usa la curva Weibull completa en su lugar.
         Se mantiene para backward compatibility con proyectos sin parámetros Weibull.
+
+        De dónde sale `asset_type` en producción: el único emisor real es
+        `RiskInput.asset_type`, poblado en la app desde `w_asset_family`
+        (session_state) — es decir, siempre una clave de `ASSET_FAMILIES`
+        (`transformador_potencia`, `interruptor_seccionador`,
+        `cable_subterraneo`, `tuberia_conduccion`, `bomba_impulsion`,
+        `valvula_regulador`, `compresor`, `turbina_grupo_hidraulico`, u
+        `otro`), nunca una clave granular de `asset_horizons_by_bu` (esa
+        vive en `ProjectInput.asset_type`, para el horizonte, no para esta
+        tasa). `ProjectWizard` (CLI) nunca asigna `asset_type` a un
+        RiskInput, así que ahí siempre cae al nivel 2 (por negocio).
+        `risk_growth_rate_by_asset` (nivel 1) usa desde D-17 la nomenclatura
+        de ASSET_FAMILIES — antes, 4 de sus 6 claves no eran alcanzables por
+        ningún `asset_type` real. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-17 para
+        la salvedad de que esas tasas siguen sin recalibrar contra el β
+        vigente de cada familia.
         """
         ot = self.config.get("optimal_timing", {})
         by_asset = ot.get("risk_growth_rate_by_asset", {})
