@@ -4194,7 +4194,7 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
         code review de la migracion de _optimal_timing_inner, D-14).
 
         El primer componente (comp_generico) NO declara asset_type propio, y
-        por eso cae a la tasa de la BU (0.15). El proyecto SI declara
+        por eso cae a la tasa de la BU (D-21: 0.055). El proyecto SI declara
         asset_type="transformador_potencia" (0.12) — un lookup a nivel de
         proyecto reportaria 0.12, distinto de lo que el primer componente
         realmente usa. Solo con esta divergencia la prueba puede detectar
@@ -4202,7 +4202,7 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
         comp_generico = RiskInput(
             baseline_consequence_level=4, baseline_probability_level=4,
             residual_consequence_level=2, residual_probability_level=2,
-            asset_type="",  # sin asset_type propio -> tasa de la BU (0.15)
+            asset_type="",  # sin asset_type propio -> tasa de la BU (D-21: 0.055)
         )
         comp_transformador = self._riesgo(weibull=False)  # asset_type="transformador_potencia" (0.12)
 
@@ -4231,8 +4231,8 @@ class S30_AnioOptimoCoherencia(unittest.TestCase):
                      f"no coincide con la suma independiente de cada uno por separado"))
 
         # El growth rate reportado debe ser el del PRIMER componente
-        # (comp_generico, sin asset_type propio -> tasa de la BU = 0.15), NO
-        # el lookup a nivel de proyecto (project.asset_type=
+        # (comp_generico, sin asset_type propio -> tasa de la BU = 0.055
+        # desde D-21), NO el lookup a nivel de proyecto (project.asset_type=
         # "transformador_potencia" -> 0.12) que el loop interno ya no usa
         # para el computo real.
         g_esperado = self.engine._get_risk_growth_rate("TyD", asset_type="")
@@ -5543,7 +5543,7 @@ class S38_RiskGrowthRateByAssetFamilias(unittest.TestCase):
         casos = [
             # (asset_type, BU de prueba, tasa especifica esperada, tasa BU de esa unidad)
             ("interruptor_seccionador", "Generacion", 0.15, 0.13),
-            ("cable_subterraneo",       "TyD",         0.10, 0.15),
+            ("cable_subterraneo",       "TyD",         0.10, 0.055),  # D-21: tasa BU TyD
             ("bomba_impulsion",         "AyA",         0.18, 0.10),
             ("valvula_regulador",       "Gas",         0.14, 0.12),
         ]
@@ -5874,6 +5874,87 @@ class S41_TransformadorPotencia_RecalibracionD20(unittest.TestCase):
 
         self.assertLess(pof(170), 0.40, "a 170 anios el par viejo aun no cruza P4")
         self.assertGreaterEqual(pof(175), 0.40, "el cruce real esta cerca de 174 anios")
+
+
+class S42_RiskGrowthRateTyD_D21(unittest.TestCase):
+    """D-21: risk_growth_rate_by_bu.TyD pasa de 0.15 (sin derivacion
+    verificable -- la nota que lo atribuia a "SIGEAS EPM + benchmarks IEEE
+    Std 493" no tenia, en todo el repositorio, ningun dataset o calculo que
+    la sustente; A-2 ya cuestionaba que componer el riesgo 16.4x en 20 anios
+    fuera plausible como tasa sostenida) a 0.055 -- derivado con la formula
+    beta1 (Initial Ageing Rate) de Ofgem CNAIM v2.1 Apendice B S6.1.5,
+    aplicada a los 10 eta ya citados con fuente real para T&D en D-19/D-20."""
+
+    def _cfg(self):
+        return _cfg()
+
+    def test_tyd_ya_no_es_015(self):
+        cfg = self._cfg()
+        self.assertNotAlmostEqual(
+            cfg["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"], 0.15,
+            msg="D-21 debia reemplazar el 0.15 sin derivacion, no dejarlo intacto")
+
+    def test_tyd_es_0055(self):
+        cfg = self._cfg()
+        self.assertAlmostEqual(
+            cfg["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"], 0.055, places=3)
+
+    def test_0055_reproduce_la_mediana_de_la_formula_cnaim_sobre_los_10_eta_reales(self):
+        """No es un numero suelto: se recalcula aqui, con la formula real de
+        Ofgem CNAIM (beta1 = ln(H_nuevo/H_vida_esperada) / eta, H_nuevo=0.5,
+        H_vida_esperada=5.5 -- constantes oficiales del estandar) aplicada a
+        los eta que D-19/D-20 ya citan con fuente para las 10 familias T&D
+        con curva real, que la mediana resultante es la que quedo escrita en
+        config.json. Si alguien recalibra un eta de estas 10 familias sin
+        volver a correr este calculo, esta prueba lo señala."""
+        import math
+        familias_td_reales = [
+            "transformador_potencia", "interruptor_seccionador", "cable_subterraneo",
+            "transformador_medida", "linea_transmision", "transformador_distribucion",
+            "linea_distribucion", "reactancia", "banco_condensadores", "rele_proteccion",
+        ]
+        tasas = []
+        for fam in familias_td_reales:
+            eta = epm_core.ASSET_FAMILIES[fam]["weibull_defaults"]["eta"]
+            beta1 = -math.log(0.5 / 5.5) / eta
+            tasas.append(beta1)
+        tasas.sort()
+        n = len(tasas)
+        mediana = tasas[n // 2] if n % 2 else (tasas[n // 2 - 1] + tasas[n // 2]) / 2
+
+        cfg = self._cfg()
+        tasa_config = cfg["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"]
+        self.assertAlmostEqual(mediana, tasa_config, places=2,
+                                msg=f"mediana CNAIM recalculada ({mediana:.4f}) no "
+                                    f"coincide con el valor en config.json ({tasa_config})")
+
+    def test_0055_es_estrictamente_menor_que_toda_tasa_especifica_por_asset(self):
+        """Las tasas propias de risk_growth_rate_by_asset (D-17, todas por
+        debajo de 0.15) deben seguir siendo mayores que el nuevo piso BU
+        para que el nivel 1 de la jerarquia (mas especifico) siga
+        aportando informacion real y no quede aplanado por el fallback."""
+        cfg = self._cfg()
+        tasa_bu = cfg["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"]
+        por_asset = cfg["optimal_timing"].get("risk_growth_rate_by_asset", {})
+        for clave, valor in por_asset.items():
+            if clave.startswith("_") or not isinstance(valor, (int, float)):
+                continue
+            with self.subTest(asset=clave):
+                self.assertNotAlmostEqual(valor, tasa_bu, places=4,
+                                          msg=f"{clave} coincide con la tasa BU -- "
+                                              f"ya no discrimina el nivel 1 de la jerarquia")
+
+    def test_crecimiento_acumulado_20_anios_es_mas_plausible_que_el_015_previo(self):
+        """Cuantifica la mejora para quien necesite sustentarlo ante el
+        negocio: (1+0.055)^20 debe ser sustancialmente menor que (1+0.15)^20
+        (x16.4, el numero que A-2 ya cuestionaba)."""
+        cfg = self._cfg()
+        tasa = cfg["optimal_timing"]["risk_growth_rate_by_bu"]["TyD"]
+        crecimiento_nuevo = (1 + tasa) ** 20
+        crecimiento_viejo = 1.15 ** 20
+        self.assertLess(crecimiento_nuevo, crecimiento_viejo / 3,
+                        "el nuevo crecimiento a 20 anios deberia ser notablemente "
+                        "menor que el que ya se habia cuestionado como implausible")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

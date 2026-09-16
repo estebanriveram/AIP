@@ -55,12 +55,12 @@
   "optimal_timing": {
     "horizon_years": 5,
     "risk_growth_rate_by_bu": {
-      "TyD": 0.15,
+      "TyD": 0.055,
       "AyA": 0.1,
       "Gas": 0.12,
       "Generacion": 0.13,
-      "_nota": "Tasa de degradación del riesgo base por BU (%/año). TyD calibrado con SIGEAS EPM + benchmarks IEEE Std 493. AyA/Gas/Gen: propuesta basada en benchmarks sectoriales — pendiente calibración con curvas SIGEAS reales.",
-      "_revision": "Cada 2 años o con incorporación de datos SIGEAS actualizados."
+      "_nota": "Tasa de degradación del riesgo base por BU (%/año) — SOLO fallback para activos sin curva Weibull propia (camino CLI, familia \"otro\", medidores AMI, SCADA). D-21: TyD recalibrado de 0,15 a 0,055 — el 0,15 previo se atribuía a 'SIGEAS EPM + benchmarks IEEE Std 493', pero no existe en el repositorio ningún dataset SIGEAS, cálculo IEEE 493 ni documento que lo sustente (git blame lo ubica en el commit inicial, sin historial de derivación); el propio registro del proyecto (hallazgo A-2) ya cuestionaba que 0,15 compone el riesgo 16,4x en 20 años, un crecimiento poco plausible como tasa sostenida. 0,055 se deriva de la fórmula β1 (Initial Ageing Rate) de Ofgem CNAIM v2.1 (metodología oficial de las distribuidoras del Reino Unido), Apéndice B §6.1.5: β1 = ln(0,5/5,5) / Vida_Esperada, aplicada a los 10 η (vida característica) ya citados con fuente real para familias T&D en D-19/D-20 (AusNet AMS 01-09, Ofgem CNAIM Tabla 20, Energex/Ergon AMP) — rango resultante 3,4%-12,0%, mediana 5,5%. Ver REGISTRO_ASUNTOS_ABIERTOS.md D-21 para la traza completa, incluyendo por qué es un piso de portafolio y no reemplaza ninguna de las 10 curvas Weibull ya calibradas. AyA/Gas/Gen: sin tocar en este hallazgo — propuesta basada en benchmarks sectoriales, pendiente de la misma auditoría que ya se hizo para TyD.",
+      "_revision": "Cada 2 años, con incorporación de datos SIGEAS reales de T&D si EPM llega a tenerlos, o al recalibrar cualquiera de los 10 η que alimentan este cálculo."
     },
     "capex_inflation_rate": 0.04,
     "_capex_nota": "Escalación CAPEX por postergación: 4%/año (IPC construcción + sobrecosto emergencia). Revisión anual DANE."

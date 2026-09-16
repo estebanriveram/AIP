@@ -1609,9 +1609,100 @@ cambió a propósito. Suite: 331 → 336 (+5), **336/336 en verde**.
   `transformador_potencia`) tienen la misma combinación peligrosa (β bajo
   cercano a 1 + η grande) que neutralice R8 en silencio — candidato para
   una revisión sistemática futura.
-- El 15% de `risk_growth_rate_by_bu.TyD` (la pregunta original de la
-  sesión) sigue sin tocar — este hallazgo se investigó primero, a pedido
-  explícito del usuario, antes de volver a esa cifra.
+
+---
+
+### D-21 · El 15% de `risk_growth_rate_by_bu.TyD` — sin derivación verificable, reemplazado por 5,5% derivado de Ofgem CNAIM sobre los η reales de T&D
+
+Cierra la pregunta que abrió toda la investigación de esta sesión: *"Tasa
+de degradación de T&D 15%... ¿de dónde sacaste ese número y la seguridad
+de decir que está listo?"*.
+
+**Confirmación final de que 15% no tiene fuente real.** La nota de
+`config.json` atribuía el valor a *"SIGEAS EPM + benchmarks IEEE Std
+493"*, con revisión programada cada 2 años. `git blame` ubica el bloque en
+el commit inicial del repositorio, sin historial de derivación; una
+búsqueda exhaustiva (grep de todo el repo, más los documentos de
+Generación y Copperleaf revisados en paralelo) no encontró ningún dataset
+SIGEAS, ningún cálculo IEEE 493, ni ningún documento que sustente la
+cifra — es una afirmación que se cita a sí misma. El hallazgo A-2,
+preexistente en el registro, ya cuestionaba que 15% compone el riesgo
+16,4× en 20 años, un crecimiento poco plausible como tasa sostenida.
+
+**Construcción del reemplazo — declarada explícitamente como cálculo, no
+como otra cita de autoridad.** Un primer intento de calcular una tasa
+"equivalente" al CAGR del PoF real de las 10 familias T&D (D-19/D-20)
+entre el año 1 y el año 20 dio resultados absurdos (23%–200%+) porque el
+PoF de una curva Weibull con β>1 es casi cero al año 1 — un error de
+método, descartado y explicado al usuario en vez de ocultado.
+
+El cálculo correcto usa una herramienta real, ya usada en D-19 como fuente
+de 2 de los 10 β/η: **Ofgem CNAIM v2.1** (*Common Network Asset Indices
+Methodology*, metodología oficial obligatoria para todas las
+distribuidoras de electricidad del Reino Unido), Apéndice B §6.1.5,
+fórmula **β1 (Initial Ageing Rate)**:
+
+```
+β1 = ln(H_nuevo / H_vida_esperada) / Vida_Esperada
+```
+
+con `H_nuevo=0,5` y `H_vida_esperada=5,5` — constantes oficiales del
+estándar (escala de salud 0-10). Es la propia fórmula que CNAIM usa para
+convertir una vida esperada en una tasa de crecimiento anual genérica —
+exactamente el problema que resuelve `risk_growth_rate_by_bu`. Aplicada a
+los 10 η (vida característica) ya citados con fuente real para T&D en
+D-19/D-20 (post-D-20, incluyendo `transformador_potencia` recalibrado a
+η=50):
+
+| Familia | η | Tasa CNAIM (β1) |
+|---|---|---|
+| linea_transmision | 70a | 3,4% |
+| transformador_distribucion | 60a | 4,0% |
+| linea_distribucion | 55a | 4,4% |
+| transformador_potencia | 50a | 4,8% |
+| transformador_medida | 45a | 5,3% |
+| reactancia | 42a | 5,7% |
+| cable_subterraneo | 30a | 8,0% |
+| banco_condensadores | 30a | 8,0% |
+| interruptor_seccionador | 25a | 9,6% |
+| rele_proteccion | 20a | 12,0% |
+
+Rango 3,4%–12,0%, **mediana 5,5%** (se usa mediana, no promedio, para no
+dejarse arrastrar por el extremo de relé de protección).
+
+**Qué es y qué no es este número.** Es un piso genérico de portafolio —
+gobierna únicamente cuando un componente de T&D NO tiene curva Weibull
+propia: el camino CLI (`ProjectWizard`, que nunca declara `asset_type`,
+D-17), la familia `"otro"`, y activos como `medidor_AMI`/
+`sistema_control_SCADA` que probablemente no deban tener Weibull en
+absoluto (obsolescencia regulatoria/electrónica, no desgaste físico). No
+reemplaza ninguna de las 10 curvas reales de D-19/D-20, que siguen
+gobernando directamente cuando aplican.
+
+**Corrección.** `optimal_timing.risk_growth_rate_by_bu.TyD` en
+`config.json`: 0,15 → **0,055**, con la nota reescrita explicando la
+fórmula, la fuente y la lista de η usados — no solo el número. AyA, Gas y
+Generación quedan sin tocar (no auditados en esta sesión).
+
+Se agregó el grupo **S42** (5 pruebas): confirma que TyD ya no es 0,15;
+confirma que es 0,055; **recalcula la fórmula CNAIM sobre los 10 η reales
+dentro de la propia prueba** y verifica que la mediana coincide con lo
+escrito en config — si alguien recalibra un η de D-19/D-20 sin rehacer
+este cálculo, la prueba lo señala; confirma que las tasas específicas de
+`risk_growth_rate_by_asset` (D-17) siguen siendo distintas del nuevo piso
+BU (no quedaron aplanadas); y cuantifica la mejora (crecimiento a 20 años
+sustancialmente menor que el 16,4× que A-2 ya cuestionaba). Se corrigieron
+además 3 comentarios/datos de prueba que citaban el 0,15 viejo de forma
+descriptiva (no rompían la suite, pero quedaban engañosos). Suite: 336 →
+341 (+5), **341/341 en verde**.
+
+**Lo que sigue abierto:**
+- AyA (10%), Gas (12%) y Generación (13%) tienen la misma nota genérica
+  "benchmarks sectoriales, pendiente calibración SIGEAS" sin auditar — no
+  se tocaron en esta sesión.
+- Si EPM llega a tener datos históricos reales de falla de T&D (SIGEAS o
+  equivalente), deben reemplazar este cálculo — el propio `_nota` de
+  config.json lo deja explícito como criterio de revisión.
 
 ---
 
