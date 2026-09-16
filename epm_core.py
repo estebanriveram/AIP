@@ -502,7 +502,11 @@ DEFAULT_CONFIG = {
         # NOTA: eta (vida característica) calibrada al 63.2% de fallas históricas.
         "weibull_params_by_asset": {
             "_nota": "β=forma, η=vida característica (años). Calibrar con historial EPM. Overrides fallback exponencial.",
-            "transformador_potencia":  {"beta": 1.31, "eta": 290}, # CIGRE/Energies 2026 Tabla 3 (>200 kV) — β≈1 casi aleatorio; η matemático, no vida física
+            # D-20: β=3.5/η=50 (AusNet AMS 01-09 Tabla 22) reemplaza CIGRE/Energies
+            # 2026 β=1.31/η=290 — ver ASSET_FAMILIES.transformador_potencia para la
+            # traza completa. Esta tabla es código muerto (D-16), se actualiza solo
+            # para no dejar un segundo valor desincronizado si algún día se conecta.
+            "transformador_potencia":  {"beta": 3.5, "eta": 50},
             "interruptor":             {"beta": 3.0,  "eta": 35},  # IEEE C37 — desgaste mecánico
             "cable_mt":                {"beta": 2.2,  "eta": 30},  # β/η de referencia XLPE — calibrar con historial EPM
             "cable_at":                {"beta": 2.0,  "eta": 35},  # β/η de referencia cable AT — calibrar con historial EPM
@@ -1845,12 +1849,25 @@ ASSET_FAMILIES: Dict[str, dict] = {
         "metodologia_preferred": "asset_aware",
         "fallback_allowed": ["driver_based", "concept_rating"],
         "weibull_defaults": {
-            "beta": 1.31,
-            "eta":  290.0,
-            "norma": "CIGRE/Energies 2026 (β/η, Tabla 3 >200 kV); IEC 60076-7 (modelo de vida)",
-            "nota":  "β=1.31 (distribución casi aleatoria, poco desgaste marcado por edad — "
-                     "hallazgo poblacional CIGRE); η=290a es vida característica matemática de la "
-                     "distribución plana, no vida física esperada. Reemplaza AusNet β=3.5/η=35.",
+            "beta": 3.5,
+            "eta":  50.0,
+            "norma": "AusNet Services AMS 01-09 Asset Risk Assessment Overview (29-oct-2020), "
+                     "Tabla 22 'Weibull Rates by Asset', fila Transformer",
+            "nota":  "D-20: reemplaza β=1.31/η=290 (Martin & Tenbohlen 2026, Energies "
+                     "19(13):3197 — 26.533 transformadores, revisado por pares; cita real, "
+                     "no descartada por falsa). El problema no era la cita, era su uso: con "
+                     "β=1.31/η=290 el PoF de un transformador de 50 años es solo 9,5% (vs. "
+                     "63,2% con este β/η) y la restricción R8 (Must-Mitigate) necesitaba 174 "
+                     "años de edad para activarse — matemáticamente inalcanzable, backstop de "
+                     "riesgo inaceptable neutralizado para el activo más costoso de T&D. "
+                     "Generación (Estrategia_Reposicion_Transformadores) usa la misma cita de "
+                     "Martin & Tenbohlen, pero SOLO como métrica ordinal de priorización, "
+                     "nunca para decidir; T&D no tenía ese resguardo. β=3.5/η=50 es el mismo "
+                     "par que ya usa D-19 como ancla de analogía para transformador_distribucion "
+                     "— con este cambio, P4 (dispara R8) se alcanza a los ~41 años, consistente "
+                     "con la realidad física. Martin & Tenbohlen sigue siendo la fuente correcta "
+                     "para el horizonte fijo de 50 años como concepto (ver REGISTRO D-20); no "
+                     "se descarta, se limita su rol a lo que soporta.",
         },
         "modos_falla": [
             "Falla dieléctrica (degradación aislamiento papel-aceite)",

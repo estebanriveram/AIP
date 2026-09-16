@@ -5485,9 +5485,12 @@ class S37_WeibullLookupDosTablas(unittest.TestCase):
     def test_tabla_original_conserva_prioridad_y_sigue_funcionando(self):
         """Las claves que YA resolvian por optimal_timing.weibull_params_by_asset
         (transformador_potencia, reconectador, cable_mt, cable_at) no deben
-        cambiar de valor ni de fuente: esa tabla se consulta primero."""
+        cambiar de valor ni de fuente: esa tabla se consulta primero.
+        transformador_potencia se actualizo deliberadamente en D-20 (beta=3.5/
+        eta=50, AusNet AMS 01-09) -- el valor esperado aqui se actualiza junto
+        con el cambio real, no es una regresion."""
         engine = self._engine()
-        self.assertEqual(engine._get_weibull_params_for_asset("transformador_potencia"), (1.31, 290.0))
+        self.assertEqual(engine._get_weibull_params_for_asset("transformador_potencia"), (3.5, 50.0))
         self.assertEqual(engine._get_weibull_params_for_asset("reconectador"), (2.8, 30.0))
         self.assertEqual(engine._get_weibull_params_for_asset("cable_mt"), (2.2, 30.0))
         self.assertEqual(engine._get_weibull_params_for_asset("cable_at"), (2.0, 35.0))
@@ -5713,8 +5716,12 @@ class S40_GrupoD_NuevasFamiliasTyD(unittest.TestCase):
                           f"activo para TyD -- quedaria inalcanzable como D-16")
 
     def test_las_3_familias_previas_de_tyd_siguen_intactas(self):
+        """transformador_potencia se recalibro deliberadamente en D-20 (beta=3.5/
+        eta=50, AusNet AMS 01-09) -- el valor esperado refleja ese cambio a
+        proposito; esta prueba sigue vigilando que interruptor_seccionador y
+        cable_subterraneo no se muevan por accidente al tocar otras familias."""
         previas = {
-            "transformador_potencia": {"beta": 1.31, "eta": 290.0},
+            "transformador_potencia": {"beta": 3.5, "eta": 50.0},
             "interruptor_seccionador": {"beta": 2.8, "eta": 25.0},
             "cable_subterraneo": {"beta": 4.0, "eta": 30.0},
         }
@@ -5775,6 +5782,98 @@ class S40_GrupoD_NuevasFamiliasTyD(unittest.TestCase):
         wd = epm_core.ASSET_FAMILIES["rele_proteccion"]["weibull_defaults"]
         self.assertAlmostEqual(wd["eta"], 20.0, places=3)
         self.assertLess(wd["eta"], 45.0)  # no se uso electromecanico
+
+
+class S41_TransformadorPotencia_RecalibracionD20(unittest.TestCase):
+    """D-20: transformador_potencia usaba beta=1.31/eta=290 (Martin & Tenbohlen
+    2026, Energies -- cita real, no fabricada) directamente en _calc_risk. El
+    problema no era la cita: con esa curva, un transformador de 50 anios tiene
+    solo 9.5% de PoF, y la restriccion R8 (Must-Mitigate) necesita 174 anios de
+    edad para activarse -- matematicamente inalcanzable, neutralizando el
+    backstop de riesgo inaceptable para el activo mas costoso de T&D.
+    Generacion usa la misma cita solo como metrica ordinal de priorizacion,
+    nunca para decidir; T&D no tenia ese resguardo. Se recalibro a beta=3.5/
+    eta=50 (AusNet AMS 01-09), el mismo par que D-19 ya usa como ancla de
+    analogia para transformador_distribucion."""
+
+    def _cfg(self):
+        return _cfg()
+
+    def test_asset_families_tiene_el_par_recalibrado(self):
+        wd = epm_core.ASSET_FAMILIES["transformador_potencia"]["weibull_defaults"]
+        self.assertAlmostEqual(wd["beta"], 3.5, places=3)
+        self.assertAlmostEqual(wd["eta"], 50.0, places=3)
+
+    def test_degradation_engine_config_consistente_con_asset_families(self):
+        """Los dos motores que consumen beta/eta de transformador_potencia
+        (_calc_risk via ASSET_FAMILIES, y AssetDegradationEngine via
+        degradation_engine.weibull_beta_by_class) deben coincidir -- si
+        difieren, es exactamente el patron de tablas desconectadas de D-16,
+        ahora en el valor que D-20 acaba de tocar."""
+        cfg = self._cfg()
+        beta_cfg = cfg["degradation_engine"]["weibull_beta_by_class"]["transformador_potencia"]
+        wd = epm_core.ASSET_FAMILIES["transformador_potencia"]["weibull_defaults"]
+        self.assertAlmostEqual(beta_cfg["beta"], wd["beta"], places=3)
+        self.assertAlmostEqual(beta_cfg["_eta_años"], wd["eta"], places=3)
+
+    def test_asset_degradation_engine_resuelve_el_nuevo_par_desde_config(self):
+        """Prueba el segundo motor en vivo (Modulo B / EEOL), no solo el
+        diccionario -- crea un AssetProfile SIN beta/eta explicitos (para que
+        caiga en el lookup por config, no en el override del perfil) y
+        confirma que _get_weibull_beta/_get_weibull_eta devuelven el par
+        recalibrado."""
+        cfg = self._cfg()
+        engine = AssetDegradationEngine(wacc=0.1, horizon_years=10, config=cfg)
+        profile = AssetProfile(
+            asset_id="TRF_D20", asset_name="Transformador D-20 test",
+            asset_class="transformador_potencia", business_unit="TyD",
+            degradation_model=DegradationModel.WEIBULL,
+            install_year=1990, design_life_years=35,
+            current_condition=0.6, replacement_cost_COP=5_000_000_000,
+            annual_maintenance_COP=200_000_000, consequence_level=3,
+        )  # weibull_beta/eta se dejan en su default (2.5) para forzar el lookup por config
+        self.assertAlmostEqual(engine._get_weibull_beta(profile), 3.5, places=3)
+        self.assertAlmostEqual(engine._get_weibull_eta(profile), 50.0, places=3)
+
+    def test_r8_umbral_p4_ahora_alcanzable_en_la_vida_util_real(self):
+        """Prueba discriminante: reproduce el mapeo PoF->nivel que usa R8
+        (umbrales v5.0: P1<5%, P2<20%, P3<40%, P4<65%) para un transformador
+        de 45 anios (el cruce real a P4 con el par nuevo es ~41.3 anios --
+        se usa 45 para no rozar el umbral). Con el par NUEVO debe cruzar a P4
+        (activa R8); con el par VIEJO (1.31/290, recreado aqui solo para la
+        comparacion) NO debe cruzarlo -- si esta prueba pasara con cualquiera
+        de los dos pares, no estaria discriminando el fix."""
+        def pof(t, beta, eta):
+            return 1 - pow(2.718281828459045, -((t/eta) ** beta))
+
+        def nivel(p, umbrales=(0.05, 0.20, 0.40, 0.65)):
+            for lvl, thr in enumerate(umbrales, start=1):
+                if p < thr:
+                    return lvl
+            return 5
+
+        edad = 45
+        wd = epm_core.ASSET_FAMILIES["transformador_potencia"]["weibull_defaults"]
+        pof_nuevo = pof(edad, wd["beta"], wd["eta"])
+        pof_viejo = pof(edad, 1.31, 290.0)
+
+        self.assertGreaterEqual(nivel(pof_nuevo), 4,
+                                 f"Con el par nuevo, PoF({edad}a)={pof_nuevo:.3f} deberia "
+                                 f"activar R8 (nivel >= 4)")
+        self.assertLess(nivel(pof_viejo), 4,
+                         f"Con el par viejo, PoF({edad}a)={pof_viejo:.3f} confirma que R8 "
+                         f"NO se activaba a esta edad -- asi se demuestra el hallazgo")
+
+    def test_r8_con_par_viejo_solo_se_activaba_pasado_los_170_anios(self):
+        """Cuantifica el hallazgo original: con beta=1.31/eta=290, el umbral
+        P4 (activa R8 a tolerancia=4) requiere ~174 anios de edad -- una
+        edad que ningun transformador real alcanza. Es la prueba de que el
+        backstop estaba matematicamente neutralizado, no solo debilitado."""
+        def pof(t, beta=1.31, eta=290.0):
+            return 1 - pow(2.718281828459045, -((t/eta) ** beta))
+
+        self.assertLess(pof(170), 0.40, "a 170 anios el par viejo aun no cruza P4")
+        self.assertGreaterEqual(pof(175), 0.40, "el cruce real esta cerca de 174 anios")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1522,6 +1522,99 @@ Suite completa: 322 → 331 (+9), **331/331 en verde**.
 
 ---
 
+### D-20 · `transformador_potencia` neutralizaba R8 (Must-Mitigate) — β=1,31/η=290 reemplazado por β=3,5/η=50
+
+Surge al auditar el 15% de T&D: el usuario preguntó de dónde salía el
+η=290 años que ya usaba `transformador_potencia` (una familia pre-existente,
+no tocada por D-16/17/18/19). No era una cita fabricada — es real: Martin,
+D. & Tenbohlen, S. (2026), "Power Transformer Component Reliability Using
+CIGRE Large-Scale Data Surveys", Energies 19(13):3197 (26.533
+transformadores, 331.379 años-operación, revisado por pares, Tabla 3
+>200 kV). El problema no era la cita, era su efecto no verificado.
+
+**Root cause.** β=1,31 está muy cerca de 1 (distribución casi aleatoria a
+nivel poblacional — CIGRE, con miles de transformadores de múltiples
+utilities, no encuentra una firma fuerte de desgaste por edad). Eso hace
+que η=290 sea la vida característica MATEMÁTICA de una curva casi plana,
+no una vida física. Consecuencia medida:
+
+| Edad | PoF con β=1,31/η=290 | PoF con β=3,5/η=50 (AusNet) |
+|---|---|---|
+| 50 años | 9,5% | 63,2% |
+
+Y más grave: la restricción **R8 (Must-Mitigate)** del MILP obliga a
+mitigar cualquier activo con nivel de riesgo declarado ≥ tolerancia (4,
+estándar EPM). Ese nivel se deriva del mismo PoF Weibull vía
+`_pof_to_level()` (umbrales P4<40%, P5≥65%). Con β=1,31/η=290, un
+transformador necesita **174 años** para cruzar P4 — matemáticamente
+inalcanzable. El backstop de riesgo inaceptable del motor estaba
+neutralizado para el activo más costoso de T&D, sin que nada lo señalara.
+
+**Contraste interno revelador.** `config.json` ya documentaba, en su
+propio comentario, que un valor previo de AusNet (β=3,5/η=50) fue
+reemplazado por esta cita CIGRE, e incluso anotaba el impacto en PoF
+("~63% con AusNet → ~9,5% con CIGRE") — una decisión estadísticamente
+razonada (población más grande y rigurosa que la curva de AusNet, sesgada
+por su propio programa de reemplazo preventivo) que no verificó su efecto
+sobre R8. Y en Generación, la misma cita CIGRE/Energies se usa —pero
+**solo como métrica ordinal de priorización** ("Costo/año MM", el propio
+documento dice "no pronóstico de pérdida"), nunca para decidir el año de
+reposición (eso lo gobierna MIN(salud AHI, edad+50), un mecanismo
+completamente aparte). T&D no tiene ese resguardo — usa el PoF Weibull
+directamente como el ΔR monetizado que compite por presupuesto en el
+MILP. Mismo dato, dos usos con niveles de riesgo muy distintos.
+
+**Se investigó si T&D debía adoptar el backstop dual de Generación (AHI +
+horizonte fijo).** No existe ningún equivalente a AHI en el código — ni
+`asset_health_index` ni nada similar; `get_horizon_for_asset()` es un
+mecanismo distinto (horizonte de evaluación NPV, no edad de reposición
+forzada). Trasplantar el backstop completo de Generación requeriría
+construir un índice de salud por activo T&D desde cero — fuera de alcance
+de este hallazgo. La corrección real y suficiente es más simple: recalibrar
+β/η a un par que ya reactive R8.
+
+**Corrección.** `transformador_potencia.weibull_defaults` en
+`ASSET_FAMILIES` (`epm_core.py`) y `degradation_engine.weibull_beta_by_class.
+transformador_potencia` (`config.json`, consumido por
+`AssetDegradationEngine`/EEOL — Módulo B, un motor distinto de
+`_calc_risk`) se actualizan juntos a **β=3,5/η=50** (AusNet Services
+AMS 01-09, Tabla 22) — el mismo par que D-19 ya usa como ancla de analogía
+para `transformador_distribucion`, evitando introducir un tercer número no
+verificado. También se actualizó la tabla muerta de D-16
+(`optimal_timing.weibull_params_by_asset`) por consistencia documental,
+aunque no sea código vivo. Con este cambio, P4 se alcanza a los ~41 años —
+consistente con la realidad física. La cita CIGRE/Energies 2026 no se
+descarta: sigue siendo válida como fuente del horizonte de 50 años como
+concepto (igual que en Generación), y ambos comentarios de código
+preservan el historial completo de la decisión previa en vez de borrarlo.
+
+Se agregó el grupo **S41** (5 pruebas): `ASSET_FAMILIES` tiene el par
+recalibrado; `degradation_engine.weibull_beta_by_class` (config.json)
+coincide con `ASSET_FAMILIES` (evita que D-20 introduzca su propio par de
+tablas desconectadas, el patrón de D-16); `AssetDegradationEngine`
+resuelve el nuevo par desde config con un `AssetProfile` sin beta/eta
+explícitos (prueba el segundo motor en vivo, no solo el diccionario); una
+prueba discriminante que confirma que a 45 años el par nuevo SÍ activa R8
+(nivel ≥ 4) y el par viejo NO lo hace a esa misma edad; y una prueba que
+cuantifica el hallazgo original — el par viejo solo cruza P4 pasados los
+~174 años. Además se actualizaron dos pruebas existentes (S37, S40) que
+afirmaban el valor viejo como "intacto" — correctamente, dado que ahora
+cambió a propósito. Suite: 331 → 336 (+5), **336/336 en verde**.
+
+**Lo que sigue abierto:**
+- El backstop dual de Generación (AHI + horizonte fijo) sigue siendo una
+  mejora genuina pendiente para T&D — requiere infraestructura de salud de
+  activos que no existe hoy; no es parte de este hallazgo.
+- No se auditó si otras familias de `ASSET_FAMILIES` (además de
+  `transformador_potencia`) tienen la misma combinación peligrosa (β bajo
+  cercano a 1 + η grande) que neutralice R8 en silencio — candidato para
+  una revisión sistemática futura.
+- El 15% de `risk_growth_rate_by_bu.TyD` (la pregunta original de la
+  sesión) sigue sin tocar — este hallazgo se investigó primero, a pedido
+  explícito del usuario, antes de volver a esa cifra.
+
+---
+
 ## Cobertura de la suite
 
 | Grupo | Qué vigila | Mutantes probados | Muertos |
